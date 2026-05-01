@@ -21,7 +21,7 @@ The repository contains a set of Python notebooks designed to support flood even
 
 ### 1. Flood Event Visualisation
 
-Visualisation of flood events from CMF outputs (3 arcmin resolution).
+Visualisation of flood events from Cama-Flood (CMF) model outputs (3 arcmin resolution).
 
 * **Notebook:** `Notebooks/Inundation-Forecast.ipynb`
 * **Inputs:**
@@ -57,7 +57,7 @@ Extraction of flood extent from **VIIRS** (~375 m resolution).
 
 ### 3. Benchmarking Framework
 
-Comparison of CaMa-Flood model simulations against EO observations.
+Comparison of CaMa-Flood (CMF) model simulations against EO observations.
 
 #### CMF vs GFM
 
