@@ -46,7 +46,7 @@ Extraction of flood extent from **VIIRS** (~375 m resolution).
 * **Notebook:** `Notebooks/Extract_VIIRS_Inundation.ipynb`
 
 * **Environment requirement:**
-  A Conda environment is required for GFM processing: gfm_env.yaml
+  A Conda environment is required for GFM processing: gfm_env.yaml file included in the Notebooks directory.
 
 * **Inputs:**
 
@@ -57,7 +57,8 @@ Extraction of flood extent from **VIIRS** (~375 m resolution).
 
 ### 3. Benchmarking Framework
 
-Comparison of CaMa-Flood (CMF) model simulations against EO observations.
+Comparison of CaMa-Flood (CMF) model simulations against EO observations. Note the benchmark consider the model grid as the target to which interpolating observations. 
+This choice was necessary due to the large discrepancy between model output and observations resolutions.
 
 #### CMF vs GFM
 
@@ -86,6 +87,7 @@ The general benchmarking framework is described in:
 Typical dependencies include:
 
 * Python 3.x
+* Metview
 * xarray
 * numpy
 * matplotlib
@@ -107,6 +109,10 @@ Additional dependencies may be required for GFM processing (see environment file
 ## Author
 
 Gianpaolo Balsamo
+Calum Baugh
+Kenka Tazi
+Andreas Grafberger
+
 ECMWF
 
 ---
