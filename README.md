@@ -21,9 +21,9 @@ The repository contains a set of Python notebooks designed to support flood even
 
 ### 1. Flood Event Visualisation
 
-Visualisation of flood events from Cama-Flood (CMF) model outputs (3 arcmin resolution).
+Visualisation of flood events from Cama-Flood (CMF) model outputs (1, 3, 6, 15 arcmin resolutions tested).
 
-* **Notebook:** `Notebooks/Inundation-Forecast.ipynb`
+* **Notebook:** `Notebooks/Rivers-Inundation-Forecast.ipynb`
 * **Inputs:**
 
   * `flood_case` name
@@ -57,7 +57,7 @@ Extraction of flood extent from **VIIRS** (~375 m resolution).
 
 ### 3. Benchmarking Framework
 
-Comparison of CaMa-Flood (CMF) model simulations against EO observations. Note the benchmark consider the model grid as the target to which interpolating observations. 
+Comparison of CaMa-Flood model simulations against EO observations. Note the benchmark consider the model grid as the target to which interpolating observations. 
 This choice was necessary due to the large discrepancy between model output and observations resolutions.
 
 #### CMF vs GFM
@@ -91,6 +91,7 @@ Typical dependencies include:
 * xarray
 * numpy
 * matplotlib
+* metview
 * rasterio
 * odc-stac (for EO data access)
 
@@ -106,13 +107,12 @@ Additional dependencies may be required for GFM processing (see environment file
 
 ---
 
-## Author
+## Authors
 
 Gianpaolo Balsamo
 Calum Baugh
 Kenka Tazi
 Andreas Grafberger
-
 ECMWF
 
 ---
