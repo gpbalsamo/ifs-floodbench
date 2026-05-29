@@ -1,0 +1,14 @@
+name: modis_flood
+channels:
+  - conda-forge
+dependencies:
+  - gdal
+  - hdf4
+  - libgdal-hdf4
+  - matplotlib
+  - numpy
+  - python=3.11
+  - rasterio
+  - requests
+  - shapely
+prefix: /perm/pad/conda/envs/modis_flood
