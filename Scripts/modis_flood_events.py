@@ -25,6 +25,7 @@ import csv
 import argparse
 import subprocess
 from pathlib import Path
+from datetime import datetime, timedelta
 import os
 
 
@@ -38,6 +39,22 @@ def run_cmd(cmd, dry_run=False):
     p = subprocess.run(cmd)
     return p.returncode
 
+def parse_date(s):
+    s = str(s).strip()
+
+    if "-" in s:
+        return datetime.strptime(s, "%Y-%m-%d")
+    else:
+        return datetime.strptime(s, "%Y%m%d")
+
+def date_range(start, end):
+    d0 = parse_date(start)
+    d1 = parse_date(end)
+
+    d = d0
+    while d <= d1:
+        yield d.strftime("%Y%m%d")
+        d += timedelta(days=1)
 
 def sanitize_name(s):
     """Safe directory/file-friendly string."""
@@ -70,6 +87,12 @@ def main():
     )
 
     parser.add_argument(
+        "--all-days",
+        action="store_true",
+        help="Process every day between date_start and date_end."
+    )
+
+    parser.add_argument(
         "--composite",
         default="F2",
         choices=["F1", "F1C", "F2", "F3"],
@@ -94,6 +117,12 @@ def main():
         "--skip-existing",
         action="store_true",
         help="Skip event if final plot PNG already exists.",
+    )
+
+    parser.add_argument(
+        "--skip-plotting",
+        action="store_true",
+        help="Run extraction only and do not generate PNG plots.",
     )
 
     parser.add_argument(
@@ -140,7 +169,13 @@ def main():
 
             flood_case = row["flood_case"]
             country = row["country"]
-            date_modis = row["date_of_max_flood_extent"]
+            date_start = row["date_start"]
+            date_end   = row["date_end"]
+            if args.all_days:
+                dates_to_process = list(date_range(date_start, date_end))
+            else:
+                dates_to_process = [row["date_of_max_flood_extent"]]
+
             lat_min = float(row["lat_min"])
             lat_max = float(row["lat_max"])
             lon_min = float(row["lon_min"])
@@ -158,91 +193,129 @@ def main():
             event_dir = outroot / safe_case
             event_dir.mkdir(parents=True, exist_ok=True)
 
-            date_tag = date_modis.replace("-", "")
             composite = args.composite
 
-            clipped_tif = event_dir / f"MCDWD_laads_{composite}_{date_tag}_clipped.tif"
-            plot_png = event_dir / f"MCDWD_{composite}_{date_tag}_flood_missing.png"
+            for date_modis in dates_to_process:
 
-            if args.skip_existing and plot_png.exists():
-                print(f"\nSkipping {flood_case}: output already exists")
-                summary_rows.append(
-                    {
-                        "flood_case": flood_case,
-                        "country": country,
-                        "date": date_modis,
-                        "status": "skipped_existing",
-                        "output_png": str(plot_png),
-                    }
-                )
+                date_tag = date_modis
+
+                clipped_tif = ( event_dir / f"MCDWD_laads_{composite}_{date_tag}_clipped.tif")
+
+                plot_png = ( event_dir / f"MCDWD_{composite}_{date_tag}_flood_missing.png")
+
+                extract_cmd = [
+                    "python3",
+                    "extract_modis_flood.py",
+                    "--date", date_modis,
+                    "--area",
+                    str(north),
+                    str(west),
+                    str(south),
+                    str(east),
+                    "--composite", composite,
+                    "--outdir", str(event_dir),
+                    "--skip-plotting",
+                ]
+
+                print( f"{flood_case} : processing {date_modis}")
+
+#                rc1 = run_cmd( extract_cmd, dry_run=args.dry_run)
+
+                if args.skip_existing and plot_png.exists():
+                    print(f"\nSkipping {flood_case}: output already exists")
+                    summary_rows.append(
+                        {
+                            "flood_case": flood_case,
+                            "country": country,
+                            "date": date_modis,
+                            "status": "skipped_existing",
+                            "output_png": str(plot_png),
+                        }
+                    )
+                    rows_processed += 1
+                    continue
+
+                extract_cmd = [
+                    "python3",
+                    "extract_modis_flood.py",
+                    "--date", date_modis,
+                    "--area", str(north), str(west), str(south), str(east),
+                    "--composite", composite,
+                    "--outdir", str(event_dir),
+                ]
+
+                plot_cmd = [
+                    "python3",
+                    "plot_modis_flood.py",
+                    "--input", str(clipped_tif),
+                    "--flood-case", f"{flood_case} | {country} | {date_modis} | MODIS {composite}",
+                    "--output", str(plot_png),
+                ]
+
+                print("\n" + "=" * 80)
+                print(f"Processing: {flood_case}")
+                print(f"Country:    {country}")
+                print(f"Date:       {date_modis}")
+                print(f"Area:       N={north}, W={west}, S={south}, E={east}")
+                print("=" * 80)
+
+                rc1 = run_cmd(extract_cmd, dry_run=args.dry_run)
+
+                if rc1 != 0:
+                    print(f"Extraction failed for {flood_case}")
+                    summary_rows.append(
+                        {
+                            "flood_case": flood_case,
+                            "country": country,
+                            "date": date_modis,
+                            "status": f"extract_failed_{rc1}",
+                            "output_png": "",
+                        }
+                    )
+                    rows_processed += 1
+                    continue
+
+                if args.skip_plotting:
+
+                    print("Skipping plotting (--skip-plotting)")
+
+                    summary_rows.append(
+                        {
+                            "flood_case": flood_case,
+                            "country": country,
+                            "date": dates_to_process,
+                            "status": "extracted_only",
+                            "output_png": "",
+                        }
+                    )
+
+                else:
+
+                    rc2 = run_cmd(plot_cmd, dry_run=args.dry_run)
+
+                    if rc2 != 0:
+                        print(f"Plotting failed for {flood_case}")
+                        summary_rows.append(
+                            {
+                                "flood_case": flood_case,
+                                "country": country,
+                                "date": dates_to_process,
+                                "status": f"plot_failed_{rc2}",
+                                "output_png": "",
+                            }
+                        )
+                    else:
+                        summary_rows.append(
+                            {
+                                "flood_case": flood_case,
+                                "country": country,
+                                "date": dates_to_process,
+                                "status": "ok",
+                                "output_png": str(plot_png),
+                            }
+                        )
+
                 rows_processed += 1
-                continue
-
-            extract_cmd = [
-                "python3",
-                "extract_modis_flood.py",
-                "--date", date_modis,
-                "--area", str(north), str(west), str(south), str(east),
-                "--composite", composite,
-                "--outdir", str(event_dir),
-            ]
-
-            plot_cmd = [
-                "python3",
-                "plot_modis_flood.py",
-                "--input", str(clipped_tif),
-                "--flood-case", f"{flood_case} | {country} | {date_modis} | MODIS {composite}",
-                "--output", str(plot_png),
-            ]
-
-            print("\n" + "=" * 80)
-            print(f"Processing: {flood_case}")
-            print(f"Country:    {country}")
-            print(f"Date:       {date_modis}")
-            print(f"Area:       N={north}, W={west}, S={south}, E={east}")
-            print("=" * 80)
-
-            rc1 = run_cmd(extract_cmd, dry_run=args.dry_run)
-
-            if rc1 != 0:
-                print(f"Extraction failed for {flood_case}")
-                summary_rows.append(
-                    {
-                        "flood_case": flood_case,
-                        "country": country,
-                        "date": date_modis,
-                        "status": f"extract_failed_{rc1}",
-                        "output_png": "",
-                    }
-                )
-                rows_processed += 1
-                continue
-
-            rc2 = run_cmd(plot_cmd, dry_run=args.dry_run)
-
-            if rc2 != 0:
-                print(f"Plotting failed for {flood_case}")
-                summary_rows.append(
-                    {
-                        "flood_case": flood_case,
-                        "country": country,
-                        "date": date_modis,
-                        "status": f"plot_failed_{rc2}",
-                        "output_png": "",
-                    }
-                )
-            else:
-                summary_rows.append(
-                    {
-                        "flood_case": flood_case,
-                        "country": country,
-                        "date": date_modis,
-                        "status": "ok",
-                        "output_png": str(plot_png),
-                    }
-                )
-
-            rows_processed += 1
 
     with open(summary_file, "w", newline="", encoding="utf-8") as f:
         fieldnames = ["flood_case", "country", "date", "status", "output_png"]

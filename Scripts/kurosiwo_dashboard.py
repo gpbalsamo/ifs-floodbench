@@ -186,8 +186,10 @@ Papa.parse("dashboard_data/KuroSiwo_events.csv", {
 (OUTDIR / "app.js").write_text(app_js)
 
 print(f"Dashboard created in: {OUTDIR}")
-print(f"Copy CSV to: {DATA_DIR / 'KuroSiwo_events.csv'}")
-print(f"Copy PNGs to: {PNG_DIR}")
+print(f"Copy CSV and PNGs to the dashboard location")
+print(f"cp KuroSiwo_events.csv {DATA_DIR / 'KuroSiwo_events.csv'}")
+print(f"cp kurosiwo_png/*.png {PNG_DIR}/.")
+print(f"rm -rf kurosiwo_png")
 print()
 print("Then run:")
 print(f"  cd {OUTDIR}")

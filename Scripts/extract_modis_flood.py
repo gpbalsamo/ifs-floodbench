@@ -66,7 +66,13 @@ def get_earthdata_token() -> str:
 
 
 def date_to_year_doy(date_str: str):
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
+    date_str = date_str.strip()
+
+    if "-" in date_str:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+    else:
+        dt = datetime.strptime(date_str, "%Y%m%d")
+
     year = dt.year
     doy = int(dt.strftime("%j"))
     adate = f"A{year}{doy:03d}"

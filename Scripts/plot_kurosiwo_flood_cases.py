@@ -18,6 +18,7 @@ Example:
 """
 
 import os
+import gc
 import argparse
 import datetime as dt
 from pathlib import Path
@@ -39,11 +40,15 @@ import metview as mv
 
 PARAMETERS = ["235270", "235275"]  # discharge, flood fraction
 
-
 def parse_date_to_yyyymmdd(value):
-    d = pd.to_datetime(value)
-    return int(d.strftime("%Y%m%d"))
 
+    s = str(value).strip()
+
+    if len(s) == 8 and s.isdigit():
+        return int(s)
+
+    d = pd.to_datetime(s)
+    return int(d.strftime("%Y%m%d"))
 
 def make_area(row, buffer_deg=0.0):
     """
@@ -190,7 +195,7 @@ def plot_case_old (row, grib_path, area, styles, outdir, args):
     flood_case = str(row["flood_case"])
     country = str(row.get("country", "Unknown"))
     continent = str(row.get("continent", "Unknown"))
-    date_label = pd.to_datetime(row["date_of_max_flood_extent"], dayfirst=True).strftime("%Y-%m-%d")
+    date_label = pd.to_datetime(str(row["date_of_max_flood_extent"]),format="%Y%m%d").strftime("%Y-%m-%d")
 
     view_area = mv.geoview(
         map_area_definition="corners",
@@ -440,6 +445,11 @@ def plot_case(row, grib_path, area, outdir, args):
     plt.subplots_adjust(top=0.86,bottom=0.12,)
     plt.savefig(output_png, dpi=200, bbox_inches="tight")
     plt.close(fig)
+    plt.close(fig)
+
+    del fc, ds, discharge, flood, flood_plot, q_plot
+    del im_flood, im_q
+    gc.collect()
 
     print(f"[saved] {output_png}")
 
@@ -465,7 +475,7 @@ def main():
 
     df = pd.read_csv(args.csv)
 
-    df["date_of_max_flood_extent"] = pd.to_datetime(df["date_of_max_flood_extent"])
+    df["date_of_max_flood_extent"] = pd.to_datetime(df["date_of_max_flood_extent"].astype(str),format="%Y%m%d")
     df = df.sort_values("date_of_max_flood_extent").reset_index(drop=True)
 
     required = [
