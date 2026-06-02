@@ -2,11 +2,13 @@
 
 This directory contains command-line scripts for extracting, plotting, and benchmarking flood inundation products used in the `ifs-floodbench` workflow.
 
-The scripts currently support three main workflows:
+The scripts currently support five main workflows:
 
 1. Extraction and plotting of NASA MODIS MCDWD flood composites for individual events.
 2. Batch processing of flood-event catalogues using KuroSiwo-style metadata.
-3. Generation of IFS/CaMa-Flood flood and river-discharge maps and a simple HTML dashboard.
+3. Peak-date estimation by scanning daily MODIS rasters (with or without downloading).
+4. Temporal gap-filling of MODIS MCDWD time-series rasters.
+5. Generation of IFS/CaMa-Flood flood and river-discharge maps and a simple HTML dashboard.
 
 The standard Conda environment used for the MODIS workflow is:
 
@@ -58,33 +60,27 @@ The MODIS scripts require a Conda environment with geospatial Python packages an
 Typical packages include:
 
 ```text
-python
+python=3.11
 numpy
-pandas
 rasterio
-rioxarray
-xarray
-geopandas
-shapely
-pyproj
-matplotlib
-cartopy
 requests
-tqdm
-netcdf4
+shapely
+matplotlib
 gdal
+hdf4
+libgdal-hdf4
 ```
 
-To document the environment reproducibly, keep an environment file in the repository, for example:
+The environment file is kept in the repository at:
 
 ```text
-envs/modis_flood.yml
+Scripts/modis_flood.yml
 ```
 
-Users can then create the environment with:
+Users can create the environment with:
 
 ```bash
-conda env create -f envs/modis_flood.yml
+conda env create -f Scripts/modis_flood.yml
 conda activate modis_flood
 ```
 
@@ -214,9 +210,11 @@ Arguments:
 --csv             Input flood-event catalogue.
 --outroot         Root output directory.
 --composite       MODIS composite: F1, F1C, F2, or F3. Default: F2.
+--all-days        Process every day between date_start and date_end instead of only date_of_max_flood_extent.
 --padding         Optional geographic padding in degrees around the event bbox.
 --limit           Optional limit on the number of events to process.
 --skip-existing   Skip events where the final PNG already exists.
+--skip-plotting   Run extraction only; do not generate PNG plots.
 --dry-run         Print commands without executing them.
 ```
 
@@ -307,6 +305,57 @@ n_missing_pixels_at_peak
 
 ---
 
+## `estimate_modis_peak_dates_csv_only.py`
+
+Estimates `date_of_max_flood_extent` from already-extracted daily MODIS clipped GeoTIFFs, **without downloading any new data**.
+
+This script is a lighter alternative to `estimate_modis_peak_dates.py` for cases where the daily MODIS rasters have already been extracted (for example by running `modis_flood_events.py --all-days`). It reads the existing GeoTIFFs, computes pixel fractions, and selects the best date using the same cloud-aware score:
+
+```text
+score = flood_fraction_valid * (1 - missing_fraction_total)
+```
+
+It also supports flexible naming via a glob fallback in case the exact filename convention differs slightly.
+
+Expected input directory structure:
+
+```text
+<raster-root>/<flood_case>/MCDWD_laads_F2_YYYYMMDD_clipped.tif
+```
+
+Example:
+
+```bash
+python3 estimate_modis_peak_dates_csv_only.py \
+  --csv Modis_floods_events_2016_onwards.csv \
+  --out Modis_floods_events_2016_onwards_peakdates.csv \
+  --raster-root modis_floods_events_2016_onwards \
+  --composite F2 \
+  --keep-original-date-column
+```
+
+Arguments:
+
+```text
+--csv                         Input KuroSiwo-style CSV.
+--out                         Output CSV with updated date_of_max_flood_extent.
+--raster-root                 Root directory containing one subdirectory per flood_case with daily clipped GeoTIFFs.
+--diag-root                   Directory for diagnostics CSVs. Default: same as --raster-root.
+--source                      Source tag used in filenames. Default: laads.
+--composite                   MODIS composite to scan. Default: F2.
+--limit                       Optional number of events to process.
+--date-output-format          Format for date_of_max_flood_extent in the output CSV: yyyymmdd or iso. Default: yyyymmdd.
+--flood-values                Raster values counted as flood. Default: 3.
+--water-values                Raster values counted as water. Default: 2.
+--missing-values              Raster values counted as missing. Default: 255.
+--min-valid-fraction          Minimum valid-pixel fraction required for a date to be eligible. Default: 0.05.
+--keep-original-date-column   Add date_of_max_flood_extent_original before replacing the peak date.
+```
+
+Output columns appended to the catalogue are the same as for `estimate_modis_peak_dates.py`.
+
+---
+
 ## `run_modis_flood.sh`
 
 Shell wrapper for a single MODIS extraction and plot.
@@ -355,8 +404,12 @@ python3 modis_flood_events.py \
   --csv Modis_floods_events_2016_onwards.csv \
   --outroot modis_floods_events_2016_onwards \
   --composite F2 \
+  --all-days \
+  --skip-plotting \
   --skip-existing
 ```
+
+Pass `--all-days` to extract every day in the event period (required before running `estimate_modis_peak_dates_csv_only.py`). Pass `--skip-plotting` to suppress PNG generation during the extraction-only pass.
 
 Before running, check that the script points to the correct working directory and catalogue:
 
@@ -372,21 +425,32 @@ dir
 
 Shell wrapper for the improved peak-date workflow.
 
-It should run:
+It runs:
 
-1. `estimate_modis_peak_dates.py`
-2. `modis_flood_events.py`
+1. `estimate_modis_peak_dates_csv_only.py` — selects the best-observed date from already-extracted daily rasters.
+2. `modis_flood_events.py` — runs extraction and plotting using the improved peak dates.
 
 The intended workflow is:
 
 ```bash
-python3 estimate_modis_peak_dates.py \
+# Step 1: extract all daily rasters (no plotting)
+python3 modis_flood_events.py \
   --csv Modis_floods_events_2016_onwards.csv \
-  --out Modis_floods_events_2016_onwards_peakdates.csv \
-  --workdir "$PERM/flood_cases/MODIS" \
+  --outroot modis_floods_events_2016_onwards \
   --composite F2 \
+  --all-days \
+  --skip-plotting \
   --skip-existing
 
+# Step 2: score peak dates from the extracted rasters
+python3 estimate_modis_peak_dates_csv_only.py \
+  --csv Modis_floods_events_2016_onwards.csv \
+  --out Modis_floods_events_2016_onwards_peakdates.csv \
+  --raster-root modis_floods_events_2016_onwards \
+  --composite F2 \
+  --keep-original-date-column
+
+# Step 3: plot only the peak day
 python3 modis_flood_events.py \
   --csv Modis_floods_events_2016_onwards_peakdates.csv \
   --outroot modis_floods_events_2016_onwards \
@@ -404,9 +468,82 @@ This is the recommended workflow when the original `date_of_max_flood_extent` is
 
 ---
 
-## `modis_flood_events.py`
+## `gapfill_modis_flood.py`
 
-Plots IFS/CaMa-Flood river discharge and flood fraction for each event in a KuroSiwo-style catalogue.
+Performs blockwise temporal gap-filling on a sequence of MODIS MCDWD clipped GeoTIFFs.
+
+Cloud cover (class 255) is the main source of missing data in MODIS optical flood products. This script fills short temporal gaps using a conservative interpolation strategy:
+
+* Pixels consistently identified as permanent water (class 1) across the time series are propagated into cloud-masked dates.
+* Short gaps (≤ 5 days by default) where both the preceding and following valid observations agree on a flood class are filled with the inferred flood class.
+* All other missing pixels are left unchanged.
+
+Only class 255 pixels are modified; all other values are preserved.
+
+Example:
+
+```bash
+python3 gapfill_modis_flood.py \
+  --indir modis_floods_events_2016_onwards/Pakistan_2022 \
+  --pattern "MCDWD_laads_F2_*_clipped.tif" \
+  --outdir modis_floods_events_2016_onwards/Pakistan_2022_gapfilled \
+  --block-size 512
+```
+
+Arguments:
+
+```text
+--indir        Input directory containing daily clipped GeoTIFFs.
+--pattern      Glob pattern to select input files. Default: MCDWD_laads_F2_*_clipped.tif.
+--outdir       Output directory for gap-filled GeoTIFFs.
+--block-size   Block size in pixels for processing. Default: 512.
+--overwrite    Overwrite existing output files.
+```
+
+Main outputs:
+
+```text
+<outdir>/MCDWD_laads_F2_<YYYYMMDD>_gapfilled_clipped.tif   (one per input date)
+<outdir>/gapfill_statistics.csv                              (per-run pixel statistics)
+```
+
+The statistics CSV contains:
+
+```text
+missing_before
+missing_after
+missing_reduced
+propagated_permanent_water
+filled_no_water
+filled_permanent_water
+filled_recurring_flood
+filled_unusual_flood
+```
+
+---
+
+## `gapfill_modis_flood.sh`
+
+Shell wrapper for running `gapfill_modis_flood.py` over all flood-case subdirectories in a batch.
+
+It loops over every subdirectory under a root cases directory and calls `gapfill_modis_flood.py` for each one, writing gap-filled outputs to a parallel directory.
+
+Run with:
+
+```bash
+bash Scripts/gapfill_modis_flood.sh
+```
+
+Before running, edit the variables at the top of the script to set the correct input and output root directories:
+
+```text
+dir_cases        Root directory containing one subdirectory per flood case.
+gap_filled_cases Root directory for gap-filled output.
+```
+
+---
+
+## `plot_kurosiwo_flood_cases.py`
 
 This script uses ECMWF/Metview and retrieves fields from MARS. It is intended for ECMWF environments where MARS and Metview are available.
 
@@ -553,15 +690,45 @@ python3 Scripts/modis_flood_events.py \
   --skip-existing
 ```
 
-## 3. Batch MODIS processing with estimated peak dates
+## 3. Batch MODIS processing with estimated peak dates (CSV-only, from existing rasters)
 
-Use this when cloud cover may make the original `date_of_max_flood_extent` unreliable.
+Use this when daily rasters have already been extracted and you want to re-score peak dates without re-downloading.
 
 ```bash
 bash Scripts/run_modis_flood_events_with_estimated_peak.sh
 ```
 
 or manually:
+
+```bash
+# Step 1: extract all daily rasters
+python3 Scripts/modis_flood_events.py \
+  --csv Modis_floods_events_2016_onwards.csv \
+  --outroot modis_floods_events_2016_onwards \
+  --composite F2 \
+  --all-days \
+  --skip-plotting \
+  --skip-existing
+
+# Step 2: select peak dates
+python3 Scripts/estimate_modis_peak_dates_csv_only.py \
+  --csv Modis_floods_events_2016_onwards.csv \
+  --out Modis_floods_events_2016_onwards_peakdates.csv \
+  --raster-root modis_floods_events_2016_onwards \
+  --composite F2 \
+  --keep-original-date-column
+
+# Step 3: generate peak-day plots
+python3 Scripts/modis_flood_events.py \
+  --csv Modis_floods_events_2016_onwards_peakdates.csv \
+  --outroot modis_floods_events_2016_onwards \
+  --composite F2 \
+  --skip-existing
+```
+
+## 3b. Batch MODIS processing with estimated peak dates (scanning download)
+
+Use this when you want `estimate_modis_peak_dates.py` to download daily rasters itself. This approach downloads data for every event day and may be slower.
 
 ```bash
 python3 Scripts/estimate_modis_peak_dates.py \
@@ -578,7 +745,19 @@ python3 Scripts/modis_flood_events.py \
   --skip-existing
 ```
 
-## 4. IFS/CaMa-Flood event plotting
+## 4. Temporal gap-filling of extracted MODIS rasters
+
+Use this to reduce cloud-caused missing values in an already-extracted time series for a single event.
+
+```bash
+python3 Scripts/gapfill_modis_flood.py \
+  --indir modis_floods_events_2016_onwards/Pakistan_2022 \
+  --pattern "MCDWD_laads_F2_*_clipped.tif" \
+  --outdir modis_floods_events_2016_onwards/Pakistan_2022_gapfilled \
+  --block-size 512
+```
+
+## 5. IFS/CaMa-Flood event plotting
 
 Use this on ECMWF systems with Metview and MARS access.
 
@@ -590,7 +769,7 @@ python3 Scripts/plot_kurosiwo_flood_cases.py \
   --step 24
 ```
 
-## 5. Static dashboard generation
+## 6. Static dashboard generation
 
 ```bash
 python3 Scripts/kurosiwo_dashboard.py
@@ -620,7 +799,10 @@ https://sites.ecmwf.int/pad/floodbench/kurosiwo-dashboard/
 
 ## Cloud cover and missing data
 
-MODIS optical flood products can be strongly affected by cloud cover. For this reason, the recommended event workflow is to run `estimate_modis_peak_dates.py` first. This selects the date with the best balance between detected flood pixels and available valid observations.
+MODIS optical flood products can be strongly affected by cloud cover. Two complementary strategies are provided:
+
+1. **Peak-date selection** — run `estimate_modis_peak_dates_csv_only.py` (or `estimate_modis_peak_dates.py`) to select the date with the best balance between detected flood pixels and available valid observations.
+2. **Temporal gap-filling** — run `gapfill_modis_flood.py` to fill short cloud gaps using conservative temporal interpolation.
 
 ## Composite choice
 
@@ -658,7 +840,7 @@ For reproducibility, commit the following files to GitHub:
 ```text
 Scripts/*.py
 Scripts/*.sh
-envs/modis_flood.yml
+Scripts/modis_flood.yml
 README.md
 Scripts/README.md
 ```
