@@ -6,6 +6,7 @@ The **ifs-floodbench** project aims to share current progress in benchmarking fl
 
 * **GFM (Sentinel-1)**
 * **VIIRS (Suomi NPP, NOAA-20, NOAA-21)**
+* **MODIS (Terra 1999-2026, Aqua 2002-2026)**
 
 The objective is to support validation and accelerate the development of flood monitoring capabilities.
 
@@ -57,8 +58,7 @@ Extraction of flood extent from **VIIRS** (~375 m resolution).
 
 ### 3. Benchmarking Framework
 
-Comparison of CaMa-Flood model simulations against EO observations. Note the benchmark consider the model grid as the target to which interpolating observations. 
-This choice was necessary due to the large discrepancy between model output and observations resolutions.
+Comparison of CaMa-Flood model simulations against EO observations. Note the benchmark consider the model grid as the target to which interpolating observations. This choice was necessary due to the large discrepancy between model output and observations resolutions.
 
 #### CMF vs GFM
 
@@ -71,6 +71,12 @@ This choice was necessary due to the large discrepancy between model output and 
 * **Inputs:**
 
   * consistent `flood_case` name across datasets
+
+---
+
+## Scripts
+
+The scripts directory contains the Python workflow. 
 
 ---
 
