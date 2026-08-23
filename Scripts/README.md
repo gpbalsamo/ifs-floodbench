@@ -2,11 +2,20 @@
 
 This directory contains command-line scripts for extracting, plotting, and benchmarking flood inundation products used in the `ifs-floodbench` workflow.
 
-The scripts currently support three main workflows:
+The scripts currently support four main workflows:
 
 1. Extraction and plotting of NASA MODIS MCDWD flood composites for individual events.
 2. Batch processing of flood-event catalogues using KuroSiwo-style metadata.
-3. Generation of IFS/CaMa-Flood flood and river-discharge maps and a simple HTML dashboard.
+3. Generation of IFS/CaMa-Flood flood and river-discharge maps.
+4. Fetching VIIRS/GFM/MODIS observations via the [`atlantis`](https://github.com/opageo/atlantis)
+   project and assembling a multi-layer HTML dashboard that overlays the
+   CaMa-Flood model and all three EO observation sources on the same map,
+   toggleable per layer (`fetch_kurosiwo_observations.py`,
+   `build_dashboard_manifest.py`, `overlay_utils.py`, `kurosiwo_dashboard.py`).
+   `fetch_kurosiwo_observations.py` shells out to atlantis's own CLI/environment
+   (default: `/perm/pad/atlantis/.venv/bin/atlantis`), so atlantis must be set
+   up separately — see its README for `uv`/`pixi` install instructions and
+   NASA Earthdata credentials.
 
 The standard Conda environment used for the MODIS workflow is:
 
@@ -27,8 +36,8 @@ Most event-based scripts expect a KuroSiwo-style CSV catalogue with the followin
 
 ```text
 flood_case
-country
-continent
+country              (optional; see add_country_continent.py)
+continent            (optional; see add_country_continent.py)
 date_start
 date_end
 lat_min
@@ -457,9 +466,184 @@ The plotting uses pixel-based rendering with no interpolation. River discharge i
 
 ---
 
+## `overlay_utils.py`
+
+Shared helper module (not a CLI) for turning a flood raster — model or EO
+observation — into a transparent, georeferenced RGBA PNG overlay that can
+be dropped directly onto a Leaflet map with `L.imageOverlay(png, bounds)`.
+
+Each source is rendered as one solid colour with per-pixel alpha
+proportional to the flooded fraction, rather than a colourmap gradient, so
+that overlapping layers from different sources stay visually
+distinguishable when stacked:
+
+```text
+cama_flood   navy    (30, 60, 150)
+viirs        orange  (230, 126, 34)
+gfm          purple  (155, 38, 182)
+modis        green   (39, 174, 96)
+```
+
+Used by `plot_kurosiwo_flood_cases.py` (model layer) and
+`build_dashboard_manifest.py` (observation layers).
+
+---
+
+## `fetch_kurosiwo_observations.py`
+
+Batch-fetches VIIRS / GFM / MODIS observations for every event in a
+KuroSiwo-style CSV catalogue, using the
+[`atlantis`](https://github.com/opageo/atlantis) CLI as the fetch and
+harmonisation backend. Atlantis resamples every source to a common
+1 arcmin grid, which is what makes the sources directly comparable as map
+overlays.
+
+For each event it runs:
+
+```bash
+atlantis fetch \
+  --event <flood_case> --source all \
+  --bbox "<west> <south> <east> <north>" \
+  --start-date ... --end-date ... \
+  --harmonise --strategy peak \
+  --output <outroot>/<flood_case>/atlantis
+```
+
+Example:
+
+```bash
+python3 fetch_kurosiwo_observations.py \
+  --csv KuroSiwo_events.csv \
+  --outroot kurosiwo_observations \
+  --source all \
+  --window-days 3 \
+  --skip-existing
+```
+
+Arguments:
+
+```text
+--csv              KuroSiwo-style CSV catalogue.
+--outroot           Root output directory. Default: kurosiwo_observations.
+--source            gfm, viirs, modis, or all. Default: all.
+--atlantis-bin       Path to the atlantis executable.
+                     Default: /perm/pad/atlantis/.venv/bin/atlantis
+--padding            Optional geographic padding in degrees around the event bbox.
+--window-days        If set, fetch a +/- N day window around date_of_max_flood_extent
+                     instead of the catalogue's full date_start..date_end window.
+--modis-composite    MODIS composite passed through to atlantis. Default: F2.
+--limit              Optional limit on number of events to process.
+--skip-existing      Skip events that already have harmonised GeoTIFFs for all requested sources.
+--dry-run            Print atlantis commands without running them.
+```
+
+This requires the atlantis environment to be set up separately (see the
+atlantis README) and, for MODIS/VIIRS, a NASA Earthdata token — see
+atlantis's `docs/setup.md`.
+
+Main outputs (per event, written by atlantis itself):
+
+```text
+<outroot>/<flood_case>/atlantis/<source>/harmonised/<flood_case>_<date>_<source>_harmonised.tif
+```
+
+---
+
+## `compute_flood_scores.py`
+
+Computes verification scores (CSI, FAR, Hit Rate / POD) comparing the
+CaMa-Flood model against each available VIIRS / GFM / MODIS observation,
+for every event and at every one of the four flooded-fraction thresholds
+in `overlay_utils.THRESHOLDS` (5% / 10% / 25% / 50%). One row is written
+per `(flood_case, source, threshold)` combination.
+
+The observation is regridded onto the (coarser) CaMa-Flood grid, both
+fields are binarized at the threshold, and a 2x2 contingency table is
+built treating the observation as truth and the model as forecast:
+
+```text
+tp = obs flooded & model flooded
+fp = obs not flooded & model flooded   (false alarm)
+fn = obs flooded & model not flooded   (miss)
+tn = obs not flooded & model not flooded
+
+CSI = tp / (tp+fp+fn)
+FAR = fp / (tp+fp)
+HR  = tp / (tp+fn)
+```
+
+Example:
+
+```bash
+python3 compute_flood_scores.py \
+  --csv KuroSiwo_events.csv \
+  --cama-grib-dir cama_png \
+  --atlantis-root kurosiwo_observations \
+  --modis-dir modis_events \
+  --out scores.csv
+```
+
+Arguments:
+
+```text
+--csv               KuroSiwo-style CSV catalogue.
+--cama-grib-dir     Directory with cached <flood_case>_flood_globe.grb
+                     files (the --outdir used with plot_kurosiwo_flood_cases.py).
+                     Events without a cached GRIB are skipped.
+--atlantis-root     Root directory from fetch_kurosiwo_observations.py (viirs/gfm).
+--modis-dir         Root directory from modis_flood_events.py (modis).
+--out               Output CSV. Default: scores.csv.
+--buffer            Degrees of padding around the event bbox, must match the
+                     --buffer used with plot_kurosiwo_flood_cases.py. Default: 0.5.
+--limit             Optional limit on number of events to process.
+```
+
+Feed the output into `build_dashboard_manifest.py --scores-csv scores.csv`
+so the dashboard shows CSI/FAR/HR per event, per source, and per
+threshold.
+
+---
+
+## `build_dashboard_manifest.py`
+
+Assembles the multi-layer manifest (`layers.json`) consumed by the
+dashboard, combining the CaMa-Flood overlay produced by
+`plot_kurosiwo_flood_cases.py --overlay-dir ...` with the VIIRS/GFM/MODIS
+harmonised GeoTIFFs from `fetch_kurosiwo_observations.py`. It renders the
+observation overlays (via `overlay_utils.geotiff_to_overlay`) and copies
+everything into `dashboard_data/layers/`.
+
+Example:
+
+```bash
+python3 build_dashboard_manifest.py \
+  --csv KuroSiwo_events.csv \
+  --cama-dir cama_png/layers \
+  --atlantis-root kurosiwo_observations \
+  --dashboard-data kurosiwo-dashboard/dashboard_data
+```
+
+Arguments:
+
+```text
+--csv               KuroSiwo-style CSV catalogue.
+--cama-dir          Directory with *_cama_flood.png/.json from plot_kurosiwo_flood_cases.py --overlay-dir.
+--atlantis-root      Root directory from fetch_kurosiwo_observations.py; supplies viirs/gfm layers.
+--modis-dir          Root directory from modis_flood_events.py; supplies the modis layer.
+--scores-csv         Output of compute_flood_scores.py; attaches CSI/FAR/HR per
+                     (event, source, threshold) to each observation layer.
+--dashboard-data     Dashboard data directory. Default: kurosiwo-dashboard/dashboard_data.
+```
+
+Output: `dashboard_data/layers.json` plus the overlay PNGs under
+`dashboard_data/layers/`.
+
+---
+
 ## `kurosiwo_dashboard.py`
 
-Creates a lightweight static HTML dashboard for browsing flood events.
+Creates a lightweight static HTML dashboard for browsing flood events,
+comparing the CaMa-Flood model against VIIRS/GFM/MODIS observations.
 
 The script creates:
 
@@ -469,7 +653,8 @@ kurosiwo-dashboard/
 ├── style.css
 ├── app.js
 └── dashboard_data/
-    └── floods_png/
+    ├── floods_png/
+    └── layers/
 ```
 
 The dashboard uses:
@@ -477,7 +662,24 @@ The dashboard uses:
 * Leaflet for the interactive map.
 * PapaParse for loading the event CSV.
 * Event bounding boxes from the catalogue.
-* One PNG per flood event.
+* `layers.json` (from `build_dashboard_manifest.py`) for the per-event,
+  per-source georeferenced overlays. Selecting an event on the map adds an
+  `L.imageOverlay` for each available layer (CaMa-Flood model, VIIRS, GFM,
+  MODIS), each independently toggleable and opacity-adjustable from the
+  "Layers" panel in the side panel — so model and observations can be
+  compared directly on the map instead of as separate static images.
+* An "Events" list in the side panel, sorted by `date_of_max_flood_extent`
+  newest-first, in addition to the map. Clicking either a list row or a
+  map rectangle selects the event and zooms/pans the map to its
+  bounding box (`map.fitBounds`).
+* A "Benchmark scores" table per event, one CSI/FAR/HR-by-threshold table
+  per observation source (from `compute_flood_scores.py` via
+  `build_dashboard_manifest.py --scores-csv`), showing all four
+  thresholds (5% / 10% / 25% / 50%) at once regardless of which
+  threshold is currently selected for the map overlay.
+* The original single reference figure (`floods_png/<flood_case>.png`,
+  from `plot_kurosiwo_flood_cases.py`'s labelled discharge+flood plot) is
+  still shown, collapsed under "Reference figure", if present.
 
 Run with:
 
@@ -485,11 +687,29 @@ Run with:
 python3 kurosiwo_dashboard.py
 ```
 
-After creating the dashboard, copy the event catalogue and PNG images into:
+Full pipeline, from a KuroSiwo catalogue to a populated dashboard:
 
-```text
-kurosiwo-dashboard/dashboard_data/
-kurosiwo-dashboard/dashboard_data/floods_png/
+```bash
+# 1. Model layer (ECMWF systems with Metview/MARS access)
+python3 plot_kurosiwo_flood_cases.py \
+  --csv KuroSiwo_events.csv --outdir cama_png \
+  --overlay-dir cama_png/layers
+
+# 2. Observation layers (VIIRS/GFM/MODIS via atlantis)
+python3 fetch_kurosiwo_observations.py \
+  --csv KuroSiwo_events.csv --outroot kurosiwo_observations
+
+# 3. Assemble the manifest
+python3 build_dashboard_manifest.py \
+  --csv KuroSiwo_events.csv \
+  --cama-dir cama_png/layers \
+  --atlantis-root kurosiwo_observations \
+  --dashboard-data kurosiwo-dashboard/dashboard_data
+
+# 4. Dashboard shell + remaining static data
+python3 kurosiwo_dashboard.py
+cp KuroSiwo_events.csv kurosiwo-dashboard/dashboard_data/
+cp cama_png/*.png kurosiwo-dashboard/dashboard_data/floods_png/   # optional reference figures
 ```
 
 Expected dashboard data layout:
@@ -501,11 +721,56 @@ kurosiwo-dashboard/
 ├── app.js
 └── dashboard_data/
     ├── KuroSiwo_events.csv
+    ├── layers.json
+    ├── layers/
+    │   ├── <flood_case>_cama_flood.png
+    │   ├── <flood_case>_viirs.png
+    │   ├── <flood_case>_gfm.png
+    │   └── <flood_case>_modis.png
     └── floods_png/
-        ├── KuroSiwo_001.png
-        ├── KuroSiwo_002.png
-        └── ...
+        └── <flood_case>.png   (optional)
 ```
+
+---
+
+## `add_country_continent.py`
+
+Adds `country` and `continent` columns to a KuroSiwo-style CSV catalogue,
+looked up from each event's bounding-box centroid against a bundled
+Natural Earth 1:110m admin-0 countries dataset
+(`Scripts/data/ne_110m_admin_0_countries.geojson`). Pure Python
+(point-in-polygon ray-casting), no geopandas/shapely dependency. Falls
+back to the nearest country boundary for coastal/river-mouth events that
+don't land inside any polygon at 110m resolution.
+
+Example:
+
+```bash
+python3 add_country_continent.py --csv KuroSiwo_events.csv
+```
+
+Arguments:
+
+```text
+--csv                  KuroSiwo-style CSV catalogue, updated in place.
+--out                  Output CSV path. Default: overwrite --csv.
+--countries-geojson    Natural Earth admin-0 countries GeoJSON.
+                       Default: Scripts/data/ne_110m_admin_0_countries.geojson
+```
+
+Run this once per catalogue (or whenever event bounding boxes change) so
+`country`/`continent` show up correctly in the dashboard instead of
+"Unknown".
+
+---
+
+## `dashboard_shell.py`
+
+Not a CLI -- the shared Leaflet/PapaParse HTML+CSS+JS generator used by
+`kurosiwo_dashboard.py`, factored out so the UI (event list, map, score
+tables, threshold/layer controls) lives in one place. Exposes
+`write_dashboard_shell(outdir, title, subtitle, events_csv,
+reference_figures, nav_links)`.
 
 ---
 
@@ -590,13 +855,37 @@ python3 Scripts/plot_kurosiwo_flood_cases.py \
   --step 24
 ```
 
-## 5. Static dashboard generation
+## 5. Multi-layer dashboard (model + observations)
 
 ```bash
+python3 Scripts/add_country_continent.py --csv KuroSiwo_events.csv
+
+python3 Scripts/plot_kurosiwo_flood_cases.py \
+  --csv KuroSiwo_events.csv --outdir cama_png \
+  --overlay-dir cama_png/layers
+
+python3 Scripts/fetch_kurosiwo_observations.py \
+  --csv KuroSiwo_events.csv --outroot kurosiwo_observations
+
+python3 Scripts/compute_flood_scores.py \
+  --csv KuroSiwo_events.csv \
+  --cama-grib-dir cama_png \
+  --atlantis-root kurosiwo_observations \
+  --modis-dir modis_events \
+  --out scores.csv
+
+python3 Scripts/build_dashboard_manifest.py \
+  --csv KuroSiwo_events.csv \
+  --cama-dir cama_png/layers \
+  --atlantis-root kurosiwo_observations \
+  --modis-dir modis_events \
+  --scores-csv scores.csv \
+  --dashboard-data kurosiwo-dashboard/dashboard_data
+
 python3 Scripts/kurosiwo_dashboard.py
 
 cp KuroSiwo_events.csv kurosiwo-dashboard/dashboard_data/
-cp kurosiwo_flood_png/*.png kurosiwo-dashboard/dashboard_data/floods_png/
+cp cama_png/*.png kurosiwo-dashboard/dashboard_data/floods_png/   # optional reference figures
 
 cd kurosiwo-dashboard
 python3 -m http.server 8000
@@ -667,8 +956,8 @@ Scripts/README.md
 
 ## Future Work
 
-* Extension of the dashboard to show model and EO data
 * Consider gap filling for EO missing data (persistence, precipitation-screening)
 * Integration with Earth System Model workflows
+* Quantitative benchmark scores (e.g. IoU/CSI between model and observation layers) surfaced in the dashboard, not just visual overlay comparison
 
 ---

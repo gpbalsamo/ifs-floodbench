@@ -168,7 +168,7 @@ def main():
             }
 
             flood_case = row["flood_case"]
-            country = row["country"]
+            country = row.get("country", "Unknown")
             date_start = row["date_start"]
             date_end   = row["date_end"]
             if args.all_days:
@@ -197,7 +197,7 @@ def main():
 
             for date_modis in dates_to_process:
 
-                date_tag = date_modis
+                date_tag = date_modis.replace("-", "")
 
                 clipped_tif = ( event_dir / f"MCDWD_laads_{composite}_{date_tag}_clipped.tif")
 

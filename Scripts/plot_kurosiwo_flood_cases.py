@@ -19,6 +19,7 @@ Example:
 
 import os
 import gc
+import json
 import argparse
 import datetime as dt
 from pathlib import Path
@@ -27,6 +28,8 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as colors
 import cartopy.crs as ccrs
 import cartopy.feature as cfeature
+
+from overlay_utils import load_fraction_array, render_overlay_all_thresholds, LAYER_COLORS
 
 # Must be set before importing metview
 os.environ.setdefault("MARS_READANY_BUFFER_SIZE", "2147483648")
@@ -279,6 +282,64 @@ def prepare_lon(ds, lon_name="lon"):
     return ds
 
 
+def load_cama_flood_fraction(grib_path, area):
+    """
+    Read a cached CaMa-Flood GRIB (as retrieved by retrieve_case) and
+    return the flood-fraction DataArray subset to `area`, masked below 1%.
+    Shared by plot_case() (figures) and compute_flood_scores.py (scoring).
+    """
+    fc = mv.read(str(grib_path))
+    ds = fc.to_dataset()
+
+    if "latitude" in ds.coords:
+        ds = ds.rename({"latitude": "lat"})
+    if "longitude" in ds.coords:
+        ds = ds.rename({"longitude": "lon"})
+
+    ds = prepare_lon(ds, lon_name="lon")
+
+    flood = find_var(ds, ["avg_fldffr", "fldfrc", "flood_fraction"]).squeeze()
+
+    north, west, south, east = area
+    if ds.lat[0] > ds.lat[-1]:
+        flood = flood.sel(lat=slice(north, south), lon=slice(west, east))
+    else:
+        flood = flood.sel(lat=slice(south, north), lon=slice(west, east))
+
+    return flood.where(flood >= 0.01)
+
+
+def write_cama_overlay(flood_plot, flood_case, date_label, overlay_dir):
+    """
+    Render the model flood-fraction field as a transparent map-overlay PNG
+    per selectable threshold (for the multi-layer dashboard) alongside a
+    JSON sidecar with the Leaflet-ready bounds. Independent of the
+    labelled figure in plot_case().
+    """
+    overlay_dir = Path(overlay_dir)
+
+    frac, bounds = load_fraction_array(
+        flood_plot.lat.values,
+        flood_plot.lon.values,
+        flood_plot.values,
+    )
+
+    png_paths = render_overlay_all_thresholds(
+        frac, bounds,
+        lambda key: overlay_dir / key / f"{flood_case}_cama_flood.png",
+        LAYER_COLORS["cama_flood"],
+    )
+
+    sidecar = overlay_dir / f"{flood_case}_cama_flood.json"
+    sidecar.write_text(json.dumps({
+        "png": {key: f"{key}/{path.name}" for key, path in png_paths.items()},
+        "bounds": bounds,
+        "date": date_label,
+    }, indent=2))
+
+    print(f"[overlay] {sidecar}")
+
+
 def plot_case(row, grib_path, area, outdir, args):
     flood_case = str(row["flood_case"])
     date_label = pd.to_datetime(row["date_of_max_flood_extent"]).strftime("%Y-%m-%d")
@@ -300,9 +361,8 @@ def plot_case(row, grib_path, area, outdir, args):
 
     ds = prepare_lon(ds, lon_name="lon")
 
-    # Extract variables
+    # Extract discharge (flood fraction comes from load_cama_flood_fraction)
     discharge = find_var(ds, ["avg_dis", "discharge", "river_discharge"]).squeeze()
-    flood = find_var(ds, ["avg_fldffr", "fldfrc", "flood_fraction"]).squeeze()
 
     # Ensure correct map bounds
     north, west, south, east = area
@@ -310,15 +370,15 @@ def plot_case(row, grib_path, area, outdir, args):
 
     # Subset to plotting area
     if ds.lat[0] > ds.lat[-1]:
-        flood = flood.sel(lat=slice(north, south), lon=slice(west, east))
         discharge = discharge.sel(lat=slice(north, south), lon=slice(west, east))
     else:
-        flood = flood.sel(lat=slice(south, north), lon=slice(west, east))
         discharge = discharge.sel(lat=slice(south, north), lon=slice(west, east))
 
-    # Mask very small values
-    flood_plot = flood.where(flood >= 0.01)
+    flood_plot = load_cama_flood_fraction(grib_path, area)
     q_plot = discharge.where(np.abs(discharge) >= 5)
+
+    if args.overlay_dir:
+        write_cama_overlay(flood_plot, flood_case, date_label, args.overlay_dir)
 
     fig = plt.figure(figsize=(10, 8))
     ax = plt.axes(projection=ccrs.PlateCarree())
@@ -466,6 +526,10 @@ def main():
     parser.add_argument("--width", default=1600, type=int)
     parser.add_argument("--font-scale", default=4, type=int)
     parser.add_argument("--use-wgrib2", action="store_true", help="Subset GRIB to bbox using wgrib2")
+    parser.add_argument("--overlay-dir", default=None,
+                         help="If set, also write a transparent CaMa-Flood map-overlay PNG "
+                              "(+ bounds JSON sidecar) per event for the dashboard, "
+                              "e.g. kurosiwo-dashboard/dashboard_data/layers")
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--limit", default=None, type=int, help="Only process first N events")
     args = parser.parse_args()
@@ -475,7 +539,10 @@ def main():
 
     df = pd.read_csv(args.csv)
 
-    df["date_of_max_flood_extent"] = pd.to_datetime(df["date_of_max_flood_extent"].astype(str),format="%Y%m%d")
+    df["date_of_max_flood_extent"] = pd.to_datetime(
+        df["date_of_max_flood_extent"].apply(parse_date_to_yyyymmdd).astype(str),
+        format="%Y%m%d",
+    )
     df = df.sort_values("date_of_max_flood_extent").reset_index(drop=True)
 
     required = [

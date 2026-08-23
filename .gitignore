@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+kurosiwo_observations/
+cama_png/
+modis_events/
+kurosiwo-dashboard/
+modis2016-dashboard/
+modis2016_events/
