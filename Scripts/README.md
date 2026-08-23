@@ -2,7 +2,7 @@
 
 This directory contains command-line scripts for extracting, plotting, and benchmarking flood inundation products used in the `ifs-floodbench` workflow.
 
-The scripts currently support four main workflows:
+The scripts currently support five main workflows:
 
 1. Extraction and plotting of NASA MODIS MCDWD flood composites for individual events.
 2. Batch processing of flood-event catalogues using KuroSiwo-style metadata.
@@ -16,6 +16,11 @@ The scripts currently support four main workflows:
    (default: `/perm/pad/atlantis/.venv/bin/atlantis`), so atlantis must be set
    up separately — see its README for `uv`/`pixi` install instructions and
    NASA Earthdata credentials.
+5. A second, standalone MODIS-only dashboard (`build_modis2016_catalogue.py`,
+   `modis2016_dashboard.py`) for named post-2016 flood events that aren't part
+   of the KuroSiwo catalogue, kept separate so the KuroSiwo dashboard stays
+   exactly the curated, fully-scored benchmark. The two dashboards share their
+   UI code (`dashboard_shell.py`) and cross-link to each other.
 
 The standard Conda environment used for the MODIS workflow is:
 
@@ -767,10 +772,63 @@ Run this once per catalogue (or whenever event bounding boxes change) so
 ## `dashboard_shell.py`
 
 Not a CLI -- the shared Leaflet/PapaParse HTML+CSS+JS generator used by
-`kurosiwo_dashboard.py`, factored out so the UI (event list, map, score
-tables, threshold/layer controls) lives in one place. Exposes
+both `kurosiwo_dashboard.py` and `modis2016_dashboard.py`, so the UI
+(event list, map, score tables, threshold/layer controls) only needs to
+be written once and both dashboards stay in sync. Exposes
 `write_dashboard_shell(outdir, title, subtitle, events_csv,
 reference_figures, nav_links)`.
+
+---
+
+## `build_modis2016_catalogue.py` / `modis2016_dashboard.py`
+
+Builds a **second, standalone** dashboard for named, hand-picked
+post-2016 flood events (Yangtze 2016, Pakistan monsoon 2022, Libya Derna
+2023, ...) that were run through `modis_flood_events.py` separately from
+the KuroSiwo catalogue and have no CaMa-Flood/VIIRS/GFM data -- kept out
+of `KuroSiwo_events.csv` / the KuroSiwo dashboard on purpose, so that
+catalogue stays exactly the curated, fully-scored KuroSiwo benchmark
+(see workflow 6 below).
+
+`build_modis2016_catalogue.py` combines:
+* an authoritative event-metadata CSV (`event_name`, `start_date`,
+  `end_date`, `country`, `continent`, `bbox_north/west/south/east`,
+  `approx_flooded_area_km2`, `main_river_system`) -- e.g.
+  `/home/pad/Notebooks/Modis_events.csv`
+* the peak observation date + clipped MODIS GeoTIFF already picked by a
+  `modis_flood_events.py`-style batch run's `batch_summary.csv` -- e.g.
+  `/perm/pad/flood_cases/modis_floods_events_2016_onwards/`
+
+into a KuroSiwo-style catalogue CSV (plus a `main_river_system` column,
+shown in the dashboard's event-info panel when present), copying each
+event's peak-date GeoTIFF into `<modis-dir>/<flood_case>/` for
+`build_dashboard_manifest.py`.
+
+Example:
+
+```bash
+python3 build_modis2016_catalogue.py \
+  --events-csv /home/pad/Notebooks/Modis_events.csv \
+  --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
+  --out Modis2016_events.csv \
+  --modis-dir modis2016_events
+```
+
+Arguments:
+
+```text
+--events-csv    Authoritative event metadata CSV (see columns above).
+--batch-root    Directory with batch_summary.csv + one subdir per event
+               (each containing MCDWD_*_<date>_clipped.tif).
+--out           Output catalogue CSV. Default: Modis2016_events.csv.
+--modis-dir     modis_flood_events.py-style output root; the peak-date
+               clipped GeoTIFF is copied to <modis-dir>/<flood_case>/.
+```
+
+`modis2016_dashboard.py` generates the dashboard shell into
+`modis2016-dashboard/` (same UI as the KuroSiwo dashboard, minus the
+"Reference figure" section, which doesn't apply here), with a small
+cross-link in the header back to the KuroSiwo dashboard and vice versa.
 
 ---
 
@@ -902,6 +960,36 @@ Or to see an example open:
 ```text
 https://sites.ecmwf.int/pad/floodbench/kurosiwo-dashboard/
 ```
+
+## 6. Standalone post-2016 named-events dashboard (MODIS-only)
+
+Kept as a **separate** dashboard from KuroSiwo (see
+`build_modis2016_catalogue.py` / `modis2016_dashboard.py` above), so the
+KuroSiwo catalogue and dashboard stay exactly the curated, fully-scored
+benchmark:
+
+```bash
+python3 Scripts/build_modis2016_catalogue.py \
+  --events-csv /home/pad/Notebooks/Modis_events.csv \
+  --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
+  --out Modis2016_events.csv \
+  --modis-dir modis2016_events
+
+python3 Scripts/build_dashboard_manifest.py \
+  --csv Modis2016_events.csv \
+  --modis-dir modis2016_events \
+  --dashboard-data modis2016-dashboard/dashboard_data
+
+python3 Scripts/modis2016_dashboard.py
+cp Modis2016_events.csv modis2016-dashboard/dashboard_data/
+
+cd modis2016-dashboard
+python3 -m http.server 8001
+```
+
+These events show up in their own map/event list with only a `modis`
+layer and no benchmark scores (no CaMa-Flood/VIIRS/GFM data was fetched
+for them). Each dashboard's header links to the other.
 
 ---
 
