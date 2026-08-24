@@ -89,6 +89,9 @@ def write_dashboard_shell(outdir, title, subtitle, events_csv,
         <h3>Layers</h3>
         <div id="layer-rows"></div>
         <p id="layer-empty" class="muted">No model/observation layers available for this event.</p>
+        <p class="muted"><span style="display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:rgba(120,120,120,0.6);"></span>Gray = no observation, VIIRS/MODIS (optical sensors blocked by cloud cover &mdash; irregular, can clear up on a later date). Genuinely unknown, not "confirmed not flooded" &mdash; excluded from that layer's CSI/FAR/HR scores.</p>
+        <p class="muted"><span style="display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:rgba(90,110,150,0.6);"></span>Slate blue = no observation, GFM (radar sees through cloud, but the satellite swath doesn't cover this area &mdash; a fixed strip, not weather-related). Also excluded from scoring.</p>
+        <p class="muted"><span style="display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px;background-color:rgba(0,172,193,0.35);background-image:repeating-linear-gradient(45deg, rgba(0,172,193,0.9) 0, rgba(0,172,193,0.9) 2px, transparent 2px, transparent 6px);"></span>Hatched teal = known lake/river/reservoir (Reference water layer). This is a fixed geographic fact, not uncertainty &mdash; CaMa-Flood's flood fraction includes this extent, so it's excluded from scoring so it isn't counted as a false alarm.</p>
       </div>{reference_html}
     </aside>
   </main>
@@ -381,7 +384,7 @@ main {
     app_js = f"""const map = L.map("map").setView([20, 0], 2);
 
 L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
-  maxZoom: 8,
+  maxZoom: 15,
   attribution: "© OpenStreetMap contributors"
 }}).addTo(map);
 
@@ -442,7 +445,9 @@ function renderLayerControls() {{
   const keys = Object.keys(LAYERS_META);
   keys.forEach(key => {{
     if (!(key in layerState)) {{
-      layerState[key] = {{ visible: true, opacity: 0.85 }};
+      // Reference water is a diagnostic overlay (lakes/rivers, not a
+      // flood/model layer), so keep it off by default to avoid clutter.
+      layerState[key] = {{ visible: key !== "reference_water", opacity: 0.85 }};
     }}
 
     const meta = LAYERS_META[key];
@@ -465,7 +470,15 @@ function renderLayerControls() {{
 
     const swatch = document.createElement("span");
     swatch.className = "swatch";
-    swatch.style.background = meta.color;
+    if (key === "reference_water") {{
+      // Matches the hatched fill used for this layer on the map, so the
+      // swatch doesn't look like just another flat-colour flood layer.
+      swatch.style.backgroundColor = "rgba(0,172,193,0.35)";
+      swatch.style.backgroundImage =
+        "repeating-linear-gradient(45deg, rgba(0,172,193,0.9) 0, rgba(0,172,193,0.9) 2px, transparent 2px, transparent 6px)";
+    }} else {{
+      swatch.style.background = meta.color;
+    }}
 
     label.appendChild(checkbox);
     label.appendChild(swatch);

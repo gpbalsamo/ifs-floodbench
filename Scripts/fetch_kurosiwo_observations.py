@@ -33,8 +33,10 @@ Example:
 """
 
 import csv
+import shutil
 import argparse
 import subprocess
+from math import ceil
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -43,6 +45,25 @@ DEFAULT_ATLANTIS_BIN = "/perm/pad/atlantis/.venv/bin/atlantis"
 
 # Sources that produce a *_<source>_harmonised.tif once fetched.
 ALL_SOURCES = ["viirs", "gfm", "modis"]
+
+# Above this width/height (degrees), a fetch is split into a grid of
+# sub-tiles instead of one atlantis call over the full bbox. Continental
+# event bboxes (e.g. Pakistan monsoon, Amazon) OOM or time out when fetched
+# whole -- the cost is driven by the AOI's pixel count at native sensor
+# resolution, not by the number of days in the fetch window, so shrinking
+# the date window alone doesn't help. Libya_Derna_Floods (~3.8x4.5 deg)
+# fetches fine unsplit, so this default has some headroom below that.
+DEFAULT_MAX_TILE_DEG = 5.0
+
+# harmonised.tif (all sources) and gfm's processed/permanent_water.tif are
+# written on the same canonical ~1 arcmin global grid (snapped to a global
+# origin), so adjacent tiles merge directly with rasterio.merge -- no
+# reprojection needed. VIIRS/MODIS processed/permanent_water.tif is native
+# per-scene resolution/extent instead and is NOT safe to merge this way;
+# it isn't needed here since VIIRS is excluded from reference-water
+# picking and MODIS reference water comes from a separate non-atlantis
+# pipeline (see overlay_utils.pick_event_reference_water).
+HARMONISED_NODATA = 255
 
 
 def sanitize_name(s):
@@ -83,8 +104,21 @@ def event_window(row, window_days):
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 
+# atlantis's default MODIS backend (lance_geotiff) only serves the last
+# ~1 week of near-real-time data; every event in these catalogues is older
+# than that, so a MODIS harmonised.tif can never appear here regardless of
+# how many times a tile/event is retried. Excluded from skip-existing
+# detection only (not from what's fetched -- the attempt itself is cheap,
+# it just fails fast) so its permanent absence doesn't block skip logic for
+# viirs/gfm, which do succeed. The dashboards' own MODIS layer comes from a
+# separate, non-atlantis pipeline (build_modis2016_catalogue.py /
+# extract_modis_flood.py), so this doesn't affect what ends up on the map.
+SKIP_CHECK_EXCLUDE_SOURCES = {"modis"}
+
+
 def harmonised_outputs_exist(event_dir, sources):
     """True if every requested source already has a harmonised GeoTIFF."""
+    sources = [s for s in sources if s not in SKIP_CHECK_EXCLUDE_SOURCES]
     for source in sources:
         harmonised_dir = event_dir / source / "harmonised"
         if not harmonised_dir.is_dir():
@@ -92,6 +126,64 @@ def harmonised_outputs_exist(event_dir, sources):
         if not list(harmonised_dir.glob("*_harmonised.tif")):
             return False
     return True
+
+
+def split_bbox(lon_min, lat_min, lon_max, lat_max, max_deg):
+    """
+    Split a bbox into a grid of sub-tiles, each no wider/taller than
+    max_deg, by dividing each axis into equal-sized shares (not fixed-size
+    tiles with a ragged remainder). Returns a list of
+    (lon_min, lat_min, lon_max, lat_max) tuples.
+    """
+    width = lon_max - lon_min
+    height = lat_max - lat_min
+    n_lon = max(1, ceil(width / max_deg))
+    n_lat = max(1, ceil(height / max_deg))
+
+    tiles = []
+    for j in range(n_lat):
+        tile_lat_min = lat_min + j * height / n_lat
+        tile_lat_max = lat_min + (j + 1) * height / n_lat
+        for i in range(n_lon):
+            tile_lon_min = lon_min + i * width / n_lon
+            tile_lon_max = lon_min + (i + 1) * width / n_lon
+            tiles.append((tile_lon_min, tile_lat_min, tile_lon_max, tile_lat_max))
+    return tiles
+
+
+def mosaic_geotiffs(tile_paths, out_path):
+    """
+    Merge same-grid GeoTIFF tiles (uint8, nodata=255) into one file via
+    rasterio.merge -- valid only for atlantis outputs that share the
+    canonical global grid (harmonised.tif for all sources; gfm's
+    processed/permanent_water.tif). See HARMONISED_NODATA note above.
+    """
+    import rasterio
+    from rasterio.merge import merge
+
+    srcs = [rasterio.open(p) for p in tile_paths]
+    try:
+        merged, merged_transform = merge(srcs, nodata=HARMONISED_NODATA)
+        crs = srcs[0].crs
+    finally:
+        for s in srcs:
+            s.close()
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    profile = {
+        "driver": "GTiff",
+        "dtype": "uint8",
+        "count": 1,
+        "height": merged.shape[1],
+        "width": merged.shape[2],
+        "crs": crs,
+        "transform": merged_transform,
+        "nodata": HARMONISED_NODATA,
+    }
+    with rasterio.open(out_path, "w", **profile) as dst:
+        dst.write(merged[0], 1)
+    return out_path
 
 
 def run_cmd(cmd, dry_run=False, timeout=600):
@@ -107,6 +199,89 @@ def run_cmd(cmd, dry_run=False, timeout=600):
     except subprocess.TimeoutExpired:
         print(f"[timeout] command exceeded {timeout}s, treating as failed and continuing")
         return -1
+
+
+def run_tiled_event(flood_case, row, args, event_dir, bbox_bounds, start_date, end_date,
+                     requested_sources, keep_tile_dirs=False):
+    """
+    Fetch one event whose bbox exceeds --max-tile-deg by splitting it into
+    a grid of smaller sub-tiles (each fetched with its own atlantis call
+    over --source all, --strategy peak), then mosaicking each source's
+    harmonised.tif (and gfm's permanent_water.tif) back into a single
+    file under event_dir, matching the layout a non-tiled fetch produces.
+
+    Per-tile --strategy peak can pick a different date in each sub-tile
+    (different parts of a continental event may flood on different days
+    within the window); the mosaic is labelled with the catalogue's
+    date_of_max_flood_extent rather than any one tile's date, since it's a
+    composite of whichever near-peak scene was clearest in each sub-area.
+
+    Returns a status string for the batch summary.
+    """
+    lon_min, lat_min, lon_max, lat_max = bbox_bounds
+    tiles = split_bbox(lon_min, lat_min, lon_max, lat_max, args.max_tile_deg)
+    tiles_root = event_dir / "_tiles"
+
+    print(f"Bbox {lon_max - lon_min:.1f}x{lat_max - lat_min:.1f} deg exceeds "
+          f"--max-tile-deg {args.max_tile_deg}: splitting into {len(tiles)} tile(s)")
+
+    for ti, (t_lon_min, t_lat_min, t_lon_max, t_lat_max) in enumerate(tiles):
+        tile_dir = tiles_root / f"tile_{ti:02d}"
+        bbox = f"{t_lon_min} {t_lat_min} {t_lon_max} {t_lat_max}"
+        print(f"\n-- tile {ti + 1}/{len(tiles)}: bbox {bbox} --")
+
+        if args.skip_existing and harmonised_outputs_exist(tile_dir, requested_sources):
+            print(f"[tile {ti:02d}] skipping: harmonised outputs already exist")
+            continue
+
+        cmd = [
+            args.atlantis_bin, "fetch",
+            "--event", flood_case,
+            "--source", args.source,
+            "--output", str(tile_dir),
+            "--bbox", bbox,
+            "--start-date", start_date,
+            "--end-date", end_date,
+            "--modis-composite", args.modis_composite,
+            "--harmonise",
+            "--strategy", "peak",
+        ]
+        rc = run_cmd(cmd, dry_run=args.dry_run, timeout=args.timeout)
+        if rc != 0:
+            print(f"[tile {ti:02d}] failed (rc={rc}), continuing with remaining tiles")
+
+    if args.dry_run:
+        return "ok"
+
+    peak_token = parse_date(row["date_of_max_flood_extent"]).strftime("%Y%m%d")
+    ok_sources, missing_sources = [], []
+
+    for source in requested_sources:
+        harmonised_tifs = sorted(tiles_root.glob(f"tile_*/{source}/harmonised/*_harmonised.tif"))
+        if not harmonised_tifs:
+            missing_sources.append(source)
+            continue
+
+        out_tif = event_dir / source / "harmonised" / f"{flood_case}_{peak_token}_{source}_harmonised.tif"
+        mosaic_geotiffs(harmonised_tifs, out_tif)
+        ok_sources.append(source)
+        print(f"[{source}] mosaicked {len(harmonised_tifs)} tile(s) -> {out_tif}")
+
+        if source == "gfm":
+            pw_tifs = sorted(tiles_root.glob("tile_*/gfm/processed/*_permanent_water.tif"))
+            if pw_tifs:
+                out_pw = event_dir / "gfm" / "processed" / f"{flood_case}_{peak_token}_gfm_permanent_water.tif"
+                mosaic_geotiffs(pw_tifs, out_pw)
+                print(f"[gfm] mosaicked {len(pw_tifs)} permanent_water tile(s) -> {out_pw}")
+
+    if not keep_tile_dirs:
+        shutil.rmtree(tiles_root, ignore_errors=True)
+
+    if not ok_sources:
+        return "failed_all_tiles"
+    if missing_sources:
+        return f"partial_missing_{'+'.join(missing_sources)}"
+    return "ok"
 
 
 def main():
@@ -134,8 +309,18 @@ def main():
     parser.add_argument("--dry-run", action="store_true",
                          help="Print atlantis commands without running them.")
     parser.add_argument("--timeout", type=int, default=600,
-                         help="Per-event timeout in seconds; a hung fetch is killed and "
-                              "recorded as failed so the batch keeps going. Default: 600.")
+                         help="Per-event timeout in seconds (per-tile, if the event is split); "
+                              "a hung fetch is killed and recorded as failed so the batch keeps "
+                              "going. Default: 600.")
+    parser.add_argument("--max-tile-deg", type=float, default=DEFAULT_MAX_TILE_DEG,
+                         help="If an event's bbox is wider or taller than this many degrees, "
+                              "split it into a grid of sub-tiles fetched separately and "
+                              "mosaicked back together, instead of one atlantis call over the "
+                              f"whole bbox. Default: {DEFAULT_MAX_TILE_DEG} (continental bboxes "
+                              "OOM/timeout the underlying fetch regardless of --window-days).")
+    parser.add_argument("--keep-tile-dirs", action="store_true",
+                         help="Keep each tile's raw atlantis output under <event>/_tiles/ after "
+                              "mosaicking, instead of deleting it to save disk.")
     args = parser.parse_args()
 
     csv_file = Path(args.csv)
@@ -173,29 +358,44 @@ def main():
         lat_min, lat_max = float(row["lat_min"]), float(row["lat_max"])
         lon_min, lon_max = float(row["lon_min"]), float(row["lon_max"])
         pad = args.padding
-        # atlantis bbox convention: "west south east north"
-        bbox = f"{lon_min - pad} {lat_min - pad} {lon_max + pad} {lat_max + pad}"
+        bbox_lon_min, bbox_lat_min = lon_min - pad, lat_min - pad
+        bbox_lon_max, bbox_lat_max = lon_max + pad, lat_max + pad
 
         start_date, end_date = event_window(row, args.window_days)
 
-        cmd = [
-            args.atlantis_bin, "fetch",
-            "--event", flood_case,
-            "--source", args.source,
-            "--output", str(event_dir),
-            "--bbox", bbox,
-            "--start-date", start_date,
-            "--end-date", end_date,
-            "--modis-composite", args.modis_composite,
-            "--harmonise",
-            "--strategy", "peak",
-        ]
+        needs_tiling = (
+            (bbox_lon_max - bbox_lon_min) > args.max_tile_deg
+            or (bbox_lat_max - bbox_lat_min) > args.max_tile_deg
+        )
 
-        rc = run_cmd(cmd, dry_run=args.dry_run, timeout=args.timeout)
+        if needs_tiling:
+            status = run_tiled_event(
+                flood_case, row, args, event_dir,
+                (bbox_lon_min, bbox_lat_min, bbox_lon_max, bbox_lat_max),
+                start_date, end_date, requested_sources,
+                keep_tile_dirs=args.keep_tile_dirs,
+            )
+        else:
+            # atlantis bbox convention: "west south east north"
+            bbox = f"{bbox_lon_min} {bbox_lat_min} {bbox_lon_max} {bbox_lat_max}"
+            cmd = [
+                args.atlantis_bin, "fetch",
+                "--event", flood_case,
+                "--source", args.source,
+                "--output", str(event_dir),
+                "--bbox", bbox,
+                "--start-date", start_date,
+                "--end-date", end_date,
+                "--modis-composite", args.modis_composite,
+                "--harmonise",
+                "--strategy", "peak",
+            ]
+            rc = run_cmd(cmd, dry_run=args.dry_run, timeout=args.timeout)
+            status = "ok" if rc == 0 else f"failed_{rc}"
 
         summary_rows.append({
             "flood_case": flood_case,
-            "status": "ok" if rc == 0 else f"failed_{rc}",
+            "status": status,
             "output_dir": str(event_dir),
         })
 

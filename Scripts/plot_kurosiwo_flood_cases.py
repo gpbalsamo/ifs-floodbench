@@ -507,7 +507,7 @@ def plot_case(row, grib_path, area, outdir, args):
     plt.close(fig)
     plt.close(fig)
 
-    del fc, ds, discharge, flood, flood_plot, q_plot
+    del fc, ds, discharge, flood_plot, q_plot
     del im_flood, im_q
     gc.collect()
 

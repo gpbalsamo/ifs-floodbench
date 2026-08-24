@@ -8,17 +8,20 @@ dashboard_shell.py).
 
 Kept separate from the KuroSiwo dashboard on purpose: these are
 hand-picked notable global floods (Yangtze 2016, Pakistan monsoon 2022,
-Libya Derna 2023, ...) with only a MODIS observation layer -- no
-CaMa-Flood GRIB, no VIIRS/GFM atlantis fetch, no benchmark scores --
-unlike the curated, fully-scored KuroSiwo catalogue. Mixing the two
-would make KuroSiwo_events.csv misleading (not every row would actually
-be a KuroSiwo event) and silently downgrade what "select an event" means
-for roughly a third of the catalogue.
+Libya Derna 2023, ...) with a MODIS observation layer and a CaMa-Flood
+model layer for visual comparison, but no VIIRS/GFM atlantis fetch and no
+benchmark scores (CSI/FAR/HR) -- unlike the curated, fully-scored
+KuroSiwo catalogue. Mixing the two would make KuroSiwo_events.csv
+misleading (not every row would actually be a KuroSiwo event) and
+silently downgrade what "select an event" means for roughly a third of
+the catalogue.
 
 Build the catalogue + copy the MODIS layers first with
-build_modis2016_catalogue.py, then assemble the manifest with
-build_dashboard_manifest.py (--modis-dir only, no --cama-dir/--atlantis-root),
-then run this script for the dashboard shell.
+build_modis2016_catalogue.py, run plot_kurosiwo_flood_cases.py against
+Modis2016_events.csv for the CaMa-Flood layer, then assemble the manifest
+with build_dashboard_manifest.py (--modis-dir and --cama-dir, no
+--atlantis-root/--scores-csv since VIIRS/GFM and scoring stay
+KuroSiwo-only), then run this script for the dashboard shell.
 """
 from pathlib import Path
 
@@ -31,7 +34,7 @@ LAYERS_DIR = DATA_DIR / "layers"
 write_dashboard_shell(
     OUTDIR,
     title="Post-2016 Flood Events Dashboard (MODIS)",
-    subtitle="Notable named global flood events since 2016, MODIS observation only",
+    subtitle="Notable named global flood events since 2016, MODIS observation + CaMa-Flood model",
     events_csv="Modis2016_events.csv",
     reference_figures=False,
     nav_links=[("← KuroSiwo benchmark dashboard", "../kurosiwo-dashboard/")],
@@ -46,9 +49,14 @@ print("    --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
 print("    --out Modis2016_events.csv \\")
 print("    --modis-dir modis2016_events")
 print()
-print("Assemble the manifest (MODIS-only: no --cama-dir/--atlantis-root):")
+print("Retrieve the CaMa-Flood layer:")
+print("  python3 plot_kurosiwo_flood_cases.py \\")
+print("    --csv Modis2016_events.csv --outdir cama_png --overlay-dir cama_png/layers")
+print()
+print("Assemble the manifest (no --atlantis-root/--scores-csv: VIIRS/GFM and scoring stay KuroSiwo-only):")
 print("  python3 build_dashboard_manifest.py \\")
 print("    --csv Modis2016_events.csv \\")
+print("    --cama-dir cama_png/layers \\")
 print("    --modis-dir modis2016_events \\")
 print(f"    --dashboard-data {DATA_DIR}")
 print()

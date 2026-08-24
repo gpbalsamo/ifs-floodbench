@@ -33,10 +33,11 @@ from PIL import Image
 
 # Default colours per source, shared with the dashboard legend.
 LAYER_COLORS = {
-    "cama_flood": (30, 60, 150),   # navy
-    "viirs": (230, 126, 34),       # orange
-    "gfm": (155, 38, 182),         # purple
-    "modis": (39, 174, 96),        # green
+    "cama_flood": (30, 60, 150),     # navy
+    "viirs": (230, 126, 34),         # orange
+    "gfm": (155, 38, 182),           # purple
+    "modis": (39, 174, 96),          # green
+    "reference_water": (0, 172, 193),  # teal: permanent/reference water, not new flooding
 }
 
 # Selectable "what counts as flooded" thresholds, applied uniformly to
@@ -53,6 +54,19 @@ DEFAULT_THRESHOLD_KEY = "t05"
 MIN_ALPHA = 90
 MAX_ALPHA = 225
 
+# "No observation" markers for VIIRS/GFM/MODIS layers, split by cause
+# since the two are physically different and shouldn't look the same:
+#   - VIIRS/MODIS are optical sensors -- gaps are cloud cover, irregular
+#     in shape and can differ day to day within the compositing window.
+#   - GFM is SAR (radar), which sees through cloud, so its gaps are pure
+#     satellite swath geometry -- a hard-edged strip that repeats in the
+#     same place on nearby dates, unrelated to weather.
+# Both are kept subtle since either can cover a large share of an event's
+# footprint (e.g. a fully cloud-covered MODIS pass, or an AOI straddling
+# a swath edge).
+CLOUD_GAP_RGBA = (120, 120, 120, 90)     # gray: VIIRS / MODIS (optical, cloud-limited)
+SWATH_GAP_RGBA = (90, 110, 150, 90)      # slate blue: GFM (SAR, swath-limited)
+
 # Minimum fraction of valid (non-missing) sub-pixels required for a
 # 1 arcmin cell to be considered informative, used when aggregating
 # native-resolution rasters (e.g. MODIS) onto the 1 arcmin grid.
@@ -61,12 +75,38 @@ MIN_VALID_FRACTION = 0.1
 ONE_ARCMIN_DEG = 1.0 / 60.0
 
 
-def _colorize(frac, rgb, threshold, min_alpha=MIN_ALPHA, max_alpha=MAX_ALPHA):
+def _hatch_mask(shape, spacing=6, width=2):
+    """
+    Boolean mask of diagonal stripes (True = paint), used to turn a flat
+    fill into a hatched pattern so a layer reads as "known background
+    context" rather than a normal flooded-fraction fill.
+    """
+    h, w = shape
+    rows = np.arange(h)[:, None]
+    cols = np.arange(w)[None, :]
+    return ((rows + cols) % spacing) < width
+
+
+def _colorize(frac, rgb, threshold, min_alpha=MIN_ALPHA, max_alpha=MAX_ALPHA, nodata_rgba=None, hatch=False):
     """
     frac: 2D array of flooded fraction in [0, 1], NaN where invalid/nodata.
     Returns an (H, W, 4) uint8 RGBA array. Pixels below `threshold` are
     fully transparent; alpha above threshold scales with the fraction.
+
+    nodata_rgba: if given, an (r, g, b, a) tuple painted onto NaN pixels
+    instead of leaving them transparent like a confirmed-dry pixel. Used
+    for observation layers (VIIRS/GFM/MODIS), where NaN means "no valid
+    observation" (cloud cover / SAR swath gap) and must stay visually
+    distinct from a pixel the source actually observed as dry. Left None
+    for the CaMa-Flood layer, whose NaN comes from an intentional <1%
+    declutter mask (see load_cama_flood_fraction), not missing data.
+
+    hatch: if True, paint the fill as a diagonal-stripe hatch instead of a
+    flat fill. Used for the reference-water layer so "known lake/river,
+    not new flooding" reads as fixed background context rather than as
+    another flavor of "missing/uncertain" alongside the nodata_rgba gray.
     """
+    missing = np.isnan(frac)
     frac = np.clip(np.nan_to_num(frac, nan=0.0), 0.0, 1.0)
 
     alpha = np.where(
@@ -75,34 +115,42 @@ def _colorize(frac, rgb, threshold, min_alpha=MIN_ALPHA, max_alpha=MAX_ALPHA):
         0,
     ).astype(np.uint8)
 
+    if hatch:
+        alpha = np.where(_hatch_mask(frac.shape), alpha, 0).astype(np.uint8)
+
     h, w = frac.shape
     rgba = np.zeros((h, w, 4), dtype=np.uint8)
     rgba[..., 0] = rgb[0]
     rgba[..., 1] = rgb[1]
     rgba[..., 2] = rgb[2]
     rgba[..., 3] = alpha
+
+    if nodata_rgba is not None:
+        rgba[missing] = nodata_rgba
+
     return rgba
 
 
-def render_overlay(frac, bounds, out_png, rgb, threshold):
+def render_overlay(frac, bounds, out_png, rgb, threshold, nodata_rgba=None, hatch=False):
     """
     Render a precomputed flooded-fraction array (row 0 = north) at a given
     threshold and write a transparent RGBA PNG. Returns out_png.
     """
-    rgba = _colorize(frac, rgb, threshold)
+    rgba = _colorize(frac, rgb, threshold, nodata_rgba=nodata_rgba, hatch=hatch)
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray(rgba, mode="RGBA").save(out_png)
     return out_png
 
 
-def render_overlay_all_thresholds(frac, bounds, out_png_for_key, rgb):
+def render_overlay_all_thresholds(frac, bounds, out_png_for_key, rgb, nodata_rgba=None, hatch=False):
     """
     Render `frac` at every threshold in THRESHOLDS.
     out_png_for_key: callable(threshold_key) -> output path.
     Returns {threshold_key: png_path}.
     """
-    return {key: render_overlay(frac, bounds, out_png_for_key(key), rgb, value)
+    return {key: render_overlay(frac, bounds, out_png_for_key(key), rgb, value,
+                                 nodata_rgba=nodata_rgba, hatch=hatch)
             for key, value in THRESHOLDS}
 
 
@@ -206,6 +254,113 @@ def load_fraction_mcdwd(tif_path, flood_classes=(3,), missing_value=255,
     bounds = [[float(dst_south), float(dst_west)], [float(dst_north), float(dst_east)]]
 
     return frac, bounds
+
+
+def load_reference_water_mask(tif_path, band=1):
+    """
+    Load an atlantis per-scene permanent-water classification
+    (<event>_<date>_<viirs|gfm>_permanent_water.tif, uint8, 1=water) as a
+    (frac, bounds) pair, frac in {0.0, 1.0}, on the same footing as the
+    flood-fraction loaders.
+
+    CaMa-Flood's flood fraction includes the standing river/lake/reservoir
+    extent that's always there, not just new flooding, while VIIRS/GFM/MODIS
+    already exclude their own reference-water class from what they report
+    as "flooded" (see atlantis's viirs/gfm processors). This mask lets
+    build_dashboard_manifest.py show that extent as its own layer and lets
+    compute_flood_scores.py exclude it from the contingency table so
+    CaMa's permanent water isn't counted as a false alarm.
+    """
+    import rasterio
+
+    with rasterio.open(tif_path) as ds:
+        data = ds.read(band)
+        frac = (data == 1).astype(float)
+
+        if ds.transform.e > 0:
+            frac = np.flipud(frac)
+
+        west, south, east, north = ds.bounds
+        bounds = [[float(south), float(west)], [float(north), float(east)]]
+
+    return frac, bounds
+
+
+def pick_reference_water_tif(atlantis_source_dir, harmonised_tif, source):
+    """
+    Find the processed/*_permanent_water.tif for the same date as the
+    given harmonised flood_fraction tif (viirs/gfm), so the reference-water
+    mask lines up with the exact scene used for that source's flood layer.
+    """
+    if harmonised_tif is None:
+        return None
+    processed_dir = Path(atlantis_source_dir) / "processed"
+    if not processed_dir.is_dir():
+        return None
+
+    parts = harmonised_tif.stem.split("_")
+    date = parts[-3] if len(parts) >= 3 else None
+    if date is None:
+        return None
+    date_compact = date.replace("-", "")
+
+    candidates = sorted(processed_dir.glob(f"*_{date_compact}_{source}_permanent_water.tif"))
+    return candidates[-1] if candidates else None
+
+
+def pick_harmonised_tif(source_dir):
+    """
+    Pick the harmonised GeoTIFF to display/score for a source. With the
+    default --strategy peak there is exactly one; if several dates exist
+    (--strategy all), pick the most recent.
+    """
+    harmonised_dir = Path(source_dir) / "harmonised"
+    tifs = sorted(harmonised_dir.glob("*_harmonised.tif"))
+    return tifs[-1] if tifs else None
+
+
+# Priority order for picking one authoritative reference-water (lakes /
+# rivers / reservoirs) mask per event. VIIRS is deliberately excluded:
+# its processed/*_permanent_water.tif is written per-day at native
+# (~375m) VIIRS resolution rather than the ~1 arcmin canonical grid GFM
+# and MODIS use, and was found to misclassify most of the AOI as "water"
+# for several events with no lake/reservoir anywhere near that size (e.g.
+# ~70-80% flagged "water" over inland France / the Philippines) -- not
+# reliable enough to subtract from either the map or the scores.
+REFERENCE_WATER_SOURCE_PRIORITY = ["modis", "gfm"]
+
+
+def pick_event_reference_water(flood_case, atlantis_event_dir, modis_dir):
+    """
+    Pick a single, best-available reference-water mask for one event,
+    shared by build_dashboard_manifest.py (the diagnostic map layer) and
+    compute_flood_scores.py (excluded from every source's CaMa comparison
+    for this event, not just one source's own mask -- a lake is the same
+    lake regardless of which sensor is being scored).
+
+    atlantis_event_dir: <atlantis_root>/<sanitized flood_case>/atlantis,
+    or None if no atlantis root was given.
+
+    Returns (frac, bounds, source_used), or (None, None, None) if no
+    source in REFERENCE_WATER_SOURCE_PRIORITY has usable data.
+    """
+    if "modis" in REFERENCE_WATER_SOURCE_PRIORITY and modis_dir:
+        event_dir = Path(modis_dir) / flood_case
+        tifs = sorted(event_dir.glob("MCDWD_*_clipped.tif"))
+        if tifs:
+            frac, bounds = load_fraction_mcdwd(tifs[-1], flood_classes=(1, 2))
+            if np.any(np.nan_to_num(frac, nan=0.0) > 0):
+                return frac, bounds, "modis"
+
+    if "gfm" in REFERENCE_WATER_SOURCE_PRIORITY and atlantis_event_dir:
+        harmonised_tif = pick_harmonised_tif(Path(atlantis_event_dir) / "gfm")
+        pw_tif = pick_reference_water_tif(Path(atlantis_event_dir) / "gfm", harmonised_tif, "gfm")
+        if pw_tif is not None:
+            frac, bounds = load_reference_water_mask(pw_tif)
+            if np.any(frac > 0):
+                return frac, bounds, "gfm"
+
+    return None, None, None
 
 
 def regrid_to(frac_src, bounds_src, shape_dst, bounds_dst):

@@ -37,10 +37,23 @@ from pathlib import Path
 from overlay_utils import (
     load_fraction_geotiff,
     load_fraction_mcdwd,
+    pick_event_reference_water,
+    pick_harmonised_tif,
     render_overlay_all_thresholds,
     LAYER_COLORS,
+    CLOUD_GAP_RGBA,
+    SWATH_GAP_RGBA,
     THRESHOLDS,
 )
+
+# Which "no observation" marker applies to each source -- see overlay_utils
+# for why VIIRS/MODIS (cloud gaps) and GFM (SAR swath gaps) get different
+# colors instead of being lumped into one "missing" gray.
+NODATA_RGBA_BY_SOURCE = {
+    "viirs": CLOUD_GAP_RGBA,
+    "modis": CLOUD_GAP_RGBA,
+    "gfm": SWATH_GAP_RGBA,
+}
 
 # VIIRS and GFM come from atlantis (--atlantis-root); MODIS comes from
 # ifs-floodbench's own extract_modis_flood.py / modis_flood_events.py
@@ -55,6 +68,7 @@ LAYERS_META = {
     "viirs": {"label": "VIIRS (observation)", "color": "#e67e22"},
     "gfm": {"label": "GFM Sentinel-1 (observation)", "color": "#9b26b6"},
     "modis": {"label": "MODIS (observation)", "color": "#27ae60"},
+    "reference_water": {"label": "Reference water (lakes/rivers, not flood)", "color": "#00acc1"},
 }
 
 THRESHOLDS_META = [{"key": key, "value": value, "label": f"{int(value * 100)}%"}
@@ -103,22 +117,21 @@ def add_cama_layer(flood_case, cama_dir, layers_out_dir):
     return {"png": png_by_threshold, "bounds": meta["bounds"], "date": meta.get("date")}
 
 
-def pick_harmonised_tif(source_dir):
-    """
-    Pick the harmonised GeoTIFF to display for a source. With the default
-    `--strategy peak` there is exactly one; if several dates exist
-    (`--strategy all`), pick the most recent.
-    """
-    harmonised_dir = Path(source_dir) / "harmonised"
-    tifs = sorted(harmonised_dir.glob("*_harmonised.tif"))
-    return tifs[-1] if tifs else None
-
-
 def render_layer_all_thresholds(flood_case, source, frac, bounds, layers_out_dir):
+    # nodata_rgba: these are observation layers, so NaN means "no valid
+    # observation" and must be visually distinct from a pixel actually
+    # observed as dry -- color depends on *why* it's missing (cloud gap
+    # for VIIRS/MODIS vs. SAR swath gap for GFM), see overlay_utils.
+    # hatch: reference_water is a fixed background fact, not a flooded-
+    # fraction fill, so it's drawn as a hatch rather than a flat colour to
+    # avoid reading as "yet another kind of missing/uncertain" next to the
+    # nodata markers.
     png_by_threshold = render_overlay_all_thresholds(
         frac, bounds,
         lambda key: layers_out_dir / key / f"{flood_case}_{source}.png",
         LAYER_COLORS[source],
+        nodata_rgba=NODATA_RGBA_BY_SOURCE.get(source),
+        hatch=(source == "reference_water"),
     )
     return {key: f"layers/{key}/{path.name}" for key, path in png_by_threshold.items()}
 
@@ -161,10 +174,29 @@ def add_observation_layer(flood_case, source, atlantis_event_dir, layers_out_dir
     return {"png": png_by_threshold, "bounds": bounds, "date": date}
 
 
+def add_reference_water_layer(flood_case, atlantis_root, modis_dir, layers_out_dir):
+    """
+    Single "known water body" overlay per event -- lakes, reservoirs, the
+    normal river channel -- so it reads visually distinct from new
+    flooding on the CaMa-Flood layer (whose flood fraction includes
+    permanent water) and from the observation layers (which already
+    exclude their own reference-water class). Diagnostic only: not scored,
+    picked via pick_event_reference_water (see overlay_utils for why VIIRS
+    is excluded from this).
+    """
+    atlantis_event_dir = Path(atlantis_root) / sanitize_name(flood_case) / "atlantis" if atlantis_root else None
+    frac, bounds, source_used = pick_event_reference_water(flood_case, atlantis_event_dir, modis_dir)
+    if frac is None:
+        return None
+
+    png_by_threshold = render_layer_all_thresholds(flood_case, "reference_water", frac, bounds, layers_out_dir)
+    return {"png": png_by_threshold, "bounds": bounds, "date": None, "source_used": source_used}
+
+
 def load_scores(scores_csv):
     """
     Load compute_flood_scores.py's output and index it as
-    {(flood_case, source): {threshold_key: {csi, far, hr, n_valid}}}.
+    {(flood_case, source): {threshold_key: {csi, far, hr, n_valid, n_ref_water_excluded}}}.
     """
     scores = {}
     with open(scores_csv, newline="") as f:
@@ -175,6 +207,7 @@ def load_scores(scores_csv):
                 "far": float(row["far"]) if row["far"] != "nan" else None,
                 "hr": float(row["hr"]) if row["hr"] != "nan" else None,
                 "n_valid": int(row["n_valid"]),
+                "n_ref_water_excluded": int(row["n_ref_water_excluded"]) if "n_ref_water_excluded" in row else 0,
             }
     return scores
 
@@ -207,11 +240,12 @@ def main():
     flood_cases = read_flood_cases(args.csv)
 
     manifest = {
-        "layers_meta": LAYERS_META,
+        "layers_meta": {},
         "thresholds": THRESHOLDS_META,
         "default_threshold": THRESHOLDS_META[0]["key"],
         "events": {},
     }
+    used_layers = set()
 
     for flood_case in flood_cases:
         event_entry = {}
@@ -237,11 +271,21 @@ def main():
                     layer["scores"] = scores[(flood_case, "modis")]
                 event_entry["modis"] = layer
 
+        ref_water = add_reference_water_layer(flood_case, args.atlantis_root, args.modis_dir, layers_out_dir)
+        if ref_water:
+            event_entry["reference_water"] = ref_water
+
         if event_entry:
             manifest["events"][flood_case] = event_entry
+            used_layers.update(event_entry.keys())
             print(f"[{flood_case}] layers: {sorted(event_entry.keys())}")
         else:
             print(f"[{flood_case}] no layers found")
+
+    # Only advertise layer types that actually have data in this manifest,
+    # so the dashboard's layer panel doesn't show a dead toggle (e.g. "GFM")
+    # for a build that never had a --atlantis-root.
+    manifest["layers_meta"] = {key: LAYERS_META[key] for key in LAYERS_META if key in used_layers}
 
     manifest_path = dashboard_data / "layers.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))

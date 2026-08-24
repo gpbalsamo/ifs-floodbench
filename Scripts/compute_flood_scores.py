@@ -49,6 +49,8 @@ from overlay_utils import (
     load_fraction_geotiff,
     load_fraction_mcdwd,
     load_fraction_array,
+    pick_event_reference_water,
+    pick_harmonised_tif,
     regrid_to,
     THRESHOLDS,
 )
@@ -73,12 +75,6 @@ def sanitize_name(s):
     )
 
 
-def pick_harmonised_tif(source_dir):
-    harmonised_dir = Path(source_dir) / "harmonised"
-    tifs = sorted(harmonised_dir.glob("*_harmonised.tif"))
-    return tifs[-1] if tifs else None
-
-
 def contingency_scores(cama_bin, obs_bin, valid):
     tp = int(np.sum(valid & obs_bin & cama_bin))
     fp = int(np.sum(valid & ~obs_bin & cama_bin))
@@ -92,9 +88,23 @@ def contingency_scores(cama_bin, obs_bin, valid):
     return tp, fp, fn, tn, csi, far, hr
 
 
-def score_one(flood_case, cama_frac, cama_bounds, obs_frac, obs_bounds, source, obs_date, cama_date):
+def score_one(flood_case, cama_frac, cama_bounds, obs_frac, obs_bounds, source, obs_date, cama_date,
+              ref_water_frac=None, ref_water_bounds=None):
     obs_regridded = regrid_to(obs_frac, obs_bounds, cama_frac.shape, cama_bounds)
     valid = ~np.isnan(cama_frac) & ~np.isnan(obs_regridded)
+
+    # CaMa-Flood's flood fraction includes the standing river/lake/reservoir
+    # extent, not just new flooding, while the observation's own
+    # flood_fraction already excludes its reference-water class -- so a
+    # permanent-water cell would otherwise always look like a CaMa false
+    # alarm. Drop those cells from the comparison entirely rather than
+    # scoring either side on them.
+    n_ref_water = 0
+    if ref_water_frac is not None:
+        ref_water_regridded = regrid_to(ref_water_frac, ref_water_bounds, cama_frac.shape, cama_bounds)
+        is_reference_water = np.nan_to_num(ref_water_regridded, nan=0.0) > 0.5
+        n_ref_water = int(np.sum(valid & is_reference_water))
+        valid = valid & ~is_reference_water
 
     rows = []
     for key, threshold in THRESHOLDS:
@@ -107,6 +117,7 @@ def score_one(flood_case, cama_frac, cama_bounds, obs_frac, obs_bounds, source, 
             "threshold_key": key,
             "threshold": threshold,
             "n_valid": int(valid.sum()),
+            "n_ref_water_excluded": n_ref_water,
             "tp": tp, "fp": fp, "fn": fn, "tn": tn,
             "csi": csi, "far": far, "hr": hr,
             "cama_date": cama_date,
@@ -164,10 +175,18 @@ def main():
 
         cama_frac, cama_bounds = load_fraction_array(flood.lat.values, flood.lon.values, flood.values)
 
+        # One reference-water mask per event, applied to every source's
+        # comparison against CaMa -- a lake is the same lake regardless of
+        # which sensor is being scored. See overlay_utils.pick_event_reference_water
+        # for why VIIRS's own permanent_water isn't used for this.
+        atlantis_event_dir = (Path(args.atlantis_root) / sanitize_name(flood_case) / "atlantis"
+                               if args.atlantis_root else None)
+        ref_frac, ref_bounds, ref_source = pick_event_reference_water(
+            flood_case, atlantis_event_dir, args.modis_dir)
+
         found_any = False
 
         if args.atlantis_root:
-            atlantis_event_dir = Path(args.atlantis_root) / sanitize_name(flood_case) / "atlantis"
             for source in ATLANTIS_SOURCES:
                 tif_path = pick_harmonised_tif(atlantis_event_dir / source)
                 if tif_path is None:
@@ -175,8 +194,10 @@ def main():
                 obs_frac, obs_bounds = load_fraction_geotiff(tif_path)
                 parts = tif_path.stem.split("_")
                 obs_date = parts[-3] if len(parts) >= 3 else None
+
                 all_rows.extend(score_one(flood_case, cama_frac, cama_bounds, obs_frac, obs_bounds,
-                                           source, obs_date, cama_date))
+                                           source, obs_date, cama_date,
+                                           ref_water_frac=ref_frac, ref_water_bounds=ref_bounds))
                 found_any = True
 
         if args.modis_dir:
@@ -189,8 +210,10 @@ def main():
                 date_tag = parts[-2] if len(parts) >= 2 else None
                 obs_date = (f"{date_tag[:4]}-{date_tag[4:6]}-{date_tag[6:8]}"
                             if date_tag and len(date_tag) == 8 else date_tag)
+
                 all_rows.extend(score_one(flood_case, cama_frac, cama_bounds, obs_frac, obs_bounds,
-                                           "modis", obs_date, cama_date))
+                                           "modis", obs_date, cama_date,
+                                           ref_water_frac=ref_frac, ref_water_bounds=ref_bounds))
                 found_any = True
 
         print(f"[{flood_case}] {'scored' if found_any else 'no observations available'}")

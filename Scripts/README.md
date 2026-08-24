@@ -18,10 +18,11 @@ The scripts currently support seven main workflows:
    (default: `/perm/pad/atlantis/.venv/bin/atlantis`), so atlantis must be set
    up separately — see its README for `uv`/`pixi` install instructions and
    NASA Earthdata credentials.
-7. A second, standalone MODIS-only dashboard (`build_modis2016_catalogue.py`,
+7. A second, standalone dashboard (`build_modis2016_catalogue.py`,
    `modis2016_dashboard.py`) for named post-2016 flood events that aren't part
-   of the KuroSiwo catalogue, kept separate so the KuroSiwo dashboard stays
-   exactly the curated, fully-scored benchmark. The two dashboards share their
+   of the KuroSiwo catalogue, showing MODIS + CaMa-Flood (no VIIRS/GFM, no
+   benchmark scores), kept separate so the KuroSiwo dashboard stays exactly
+   the curated, fully-scored benchmark. The two dashboards share their
    UI code (`dashboard_shell.py`) and cross-link to each other.
 
 The standard Conda environment used for the MODIS workflow is:
@@ -1140,12 +1141,13 @@ Or to see an example open:
 https://sites.ecmwf.int/pad/floodbench/kurosiwo-dashboard/
 ```
 
-## 7. Standalone post-2016 named-events dashboard (MODIS-only)
+## 7. Standalone post-2016 named-events dashboard (MODIS + CaMa-Flood)
 
 Kept as a **separate** dashboard from KuroSiwo (see
 `build_modis2016_catalogue.py` / `modis2016_dashboard.py` above), so the
 KuroSiwo catalogue and dashboard stay exactly the curated, fully-scored
-benchmark:
+benchmark. VIIRS/GFM and benchmark scores (CSI/FAR/HR) stay KuroSiwo-only;
+CaMa-Flood is included here purely as a visual comparison layer:
 
 ```bash
 python3 Scripts/build_modis2016_catalogue.py \
@@ -1154,8 +1156,12 @@ python3 Scripts/build_modis2016_catalogue.py \
   --out Modis2016_events.csv \
   --modis-dir modis2016_events
 
+python3 Scripts/plot_kurosiwo_flood_cases.py \
+  --csv Modis2016_events.csv --outdir cama_png --overlay-dir cama_png/layers
+
 python3 Scripts/build_dashboard_manifest.py \
   --csv Modis2016_events.csv \
+  --cama-dir cama_png/layers \
   --modis-dir modis2016_events \
   --dashboard-data modis2016-dashboard/dashboard_data
 
@@ -1166,9 +1172,10 @@ cd modis2016-dashboard
 python3 -m http.server 8001
 ```
 
-These events show up in their own map/event list with only a `modis`
-layer and no benchmark scores (no CaMa-Flood/VIIRS/GFM data was fetched
-for them). Each dashboard's header links to the other.
+These events show up in their own map/event list with `modis` and
+`cama_flood` layers, a diagnostic `reference_water` layer, but no
+benchmark scores and no VIIRS/GFM (not fetched for this catalogue). Each
+dashboard's header links to the other.
 
 ---
 
