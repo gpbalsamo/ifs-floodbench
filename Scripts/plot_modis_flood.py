@@ -198,8 +198,10 @@ def plot_modis_flood_and_missing(
     if output_png is not None:
         plt.savefig(output_png, dpi=200, bbox_inches="tight")
         print(f"Saved: {output_png}")
+    else:
+        plt.show()
 
-    plt.show()
+    plt.close()
 
 
 def main():

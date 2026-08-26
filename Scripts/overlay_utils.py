@@ -131,11 +131,59 @@ def _colorize(frac, rgb, threshold, min_alpha=MIN_ALPHA, max_alpha=MAX_ALPHA, no
     return rgba
 
 
+def mercator_prewarp_rows(frac, bounds):
+    """
+    Resample frac's rows so they're spaced uniformly in Web Mercator Y
+    instead of uniformly in latitude.
+
+    Leaflet's L.imageOverlay does not reproject a raster into Web Mercator
+    -- it CSS-stretches the flat image linearly between the screen
+    positions of its bounds' north and south edges. Our frac arrays are
+    uniform-in-latitude (row i <-> lat linearly), so for a large-latitude
+    bbox that naive linear stretch systematically displaces the interior
+    of the image toward whichever pole is nearer, growing with the bbox's
+    latitude extent (~35km for a 20 degree bbox, ~2km for a 4 degree one)
+    -- while the bounds' own four corners stay exactly correct, which is
+    why any check based on bounds/corners alone can never catch this.
+    Pre-warping so row i instead corresponds to a Mercator-uniform Y
+    means Leaflet's linear stretch now lines up with what it already
+    assumes.
+
+    bounds: [[south, west], [north, east]].
+    """
+    (south, west), (north, east) = bounds
+    h = frac.shape[0]
+    if h < 2 or south <= -89.9 or north >= 89.9:
+        return frac
+
+    def merc_y(lat_deg):
+        lat = np.radians(lat_deg)
+        return np.log(np.tan(np.pi / 4 + lat / 2))
+
+    y_north, y_south = merc_y(north), merc_y(south)
+    # Leaflet places row i at fraction f=i/(h-1) of the way from y_north
+    # to y_south (uniform in Mercator Y). Find the true latitude whose
+    # Mercator Y equals that, then sample the source (uniform-in-latitude)
+    # array at the row corresponding to that true latitude.
+    f = np.arange(h) / (h - 1)
+    y_target = y_north + f * (y_south - y_north)
+    lat_source = np.degrees(2 * np.arctan(np.exp(y_target)) - np.pi / 2)
+    src_row_f = np.clip((north - lat_source) / (north - south) * (h - 1), 0, h - 1)
+    row0 = np.floor(src_row_f).astype(int)
+    row1 = np.minimum(row0 + 1, h - 1)
+    w = (src_row_f - row0)[:, None]
+
+    warped = frac[row0] * (1 - w) + frac[row1] * w
+    warped[np.isnan(frac[row0]) | np.isnan(frac[row1])] = np.nan
+    return warped
+
+
 def render_overlay(frac, bounds, out_png, rgb, threshold, nodata_rgba=None, hatch=False):
     """
     Render a precomputed flooded-fraction array (row 0 = north) at a given
     threshold and write a transparent RGBA PNG. Returns out_png.
     """
+    frac = mercator_prewarp_rows(frac, bounds)
     rgba = _colorize(frac, rgb, threshold, nodata_rgba=nodata_rgba, hatch=hatch)
     out_png = Path(out_png)
     out_png.parent.mkdir(parents=True, exist_ok=True)

@@ -93,6 +93,21 @@ def read_flood_cases(csv_path):
         return [row["flood_case"].strip() for row in reader if row.get("flood_case")]
 
 
+def _versioned_png_path(rel_path, fs_path):
+    """
+    Append a cache-busting query param (the file's mtime) to a PNG's
+    manifest path. Every event/threshold/source always writes to the same
+    filename (e.g. layers/t05/Queensland_Floods_cama_flood.png), so
+    re-running the pipeline after fixing a bbox overwrites that file in
+    place. Browsers cache images aggressively by URL even when the server
+    (a plain http.server) sends no cache-control headers, so without this
+    a stale cached image can pair with freshly-fetched (correct) bounds
+    from layers.json -- which looks exactly like a shifted/misaligned
+    overlay even though nothing on disk is wrong.
+    """
+    return f"{rel_path}?v={int(fs_path.stat().st_mtime)}"
+
+
 def add_cama_layer(flood_case, cama_dir, layers_out_dir):
     """Copy an existing CaMa-Flood overlay PNG set + JSON sidecar into place."""
     cama_dir = Path(cama_dir)
@@ -109,7 +124,7 @@ def add_cama_layer(flood_case, cama_dir, layers_out_dir):
         dst_png = layers_out_dir / key / src_png.name
         dst_png.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src_png, dst_png)
-        png_by_threshold[key] = f"layers/{key}/{dst_png.name}"
+        png_by_threshold[key] = _versioned_png_path(f"layers/{key}/{dst_png.name}", dst_png)
 
     if not png_by_threshold:
         return None
@@ -133,7 +148,7 @@ def render_layer_all_thresholds(flood_case, source, frac, bounds, layers_out_dir
         nodata_rgba=NODATA_RGBA_BY_SOURCE.get(source),
         hatch=(source == "reference_water"),
     )
-    return {key: f"layers/{key}/{path.name}" for key, path in png_by_threshold.items()}
+    return {key: _versioned_png_path(f"layers/{key}/{path.name}", path) for key, path in png_by_threshold.items()}
 
 
 def add_modis_layer(flood_case, modis_dir, layers_out_dir, flood_classes=(3,)):

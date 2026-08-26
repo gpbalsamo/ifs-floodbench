@@ -33,6 +33,7 @@ Example:
 """
 
 import csv
+import json
 import shutil
 import argparse
 import subprocess
@@ -116,14 +117,47 @@ def event_window(row, window_days):
 SKIP_CHECK_EXCLUDE_SOURCES = {"modis"}
 
 
+def _coverage_sidecar_path(event_dir):
+    """
+    Per-event JSON recording, per source, how many of the tiles the bbox
+    was split into actually produced a harmonised.tif when a tiled fetch
+    last ran (see run_tiled_event). A tile-fetch batch can be interrupted
+    (SLURM timeout, an earlier OOM kill, a killed session) and resumed
+    later with --skip-existing; without this, a mosaic silently built from
+    a subset of tiles (e.g. only the tiles that happened to survive an
+    earlier interrupted run) looks identical on disk to a complete one --
+    both just have *a* harmonised.tif -- so a resume would skip the event
+    entirely and the gap would never get filled. This file lets
+    harmonised_outputs_exist tell "complete" apart from "partial".
+    """
+    return event_dir / "_tile_coverage.json"
+
+
 def harmonised_outputs_exist(event_dir, sources):
-    """True if every requested source already has a harmonised GeoTIFF."""
+    """
+    True if every requested source already has a harmonised GeoTIFF AND
+    (for a tiled fetch) every tile the bbox was split into contributed to
+    it -- see _coverage_sidecar_path. An event/tile with no coverage
+    sidecar (non-tiled fetch) is judged on file existence alone, as
+    before.
+    """
     sources = [s for s in sources if s not in SKIP_CHECK_EXCLUDE_SOURCES]
+    coverage = {}
+    sidecar = _coverage_sidecar_path(event_dir)
+    if sidecar.exists():
+        try:
+            coverage = json.loads(sidecar.read_text())
+        except (json.JSONDecodeError, OSError):
+            coverage = {}
+
     for source in sources:
         harmonised_dir = event_dir / source / "harmonised"
         if not harmonised_dir.is_dir():
             return False
         if not list(harmonised_dir.glob("*_harmonised.tif")):
+            return False
+        cov = coverage.get(source)
+        if cov and cov.get("ok_tiles", 0) < cov.get("total_tiles", 0):
             return False
     return True
 
@@ -201,12 +235,50 @@ def run_cmd(cmd, dry_run=False, timeout=600):
         return -1
 
 
+def run_atlantis_fetch(atlantis_bin, flood_case, source_arg, requested_sources, output_dir,
+                        bbox, start_date, end_date, modis_composite, timeout, dry_run=False,
+                        modis_backend="lance_geotiff"):
+    """
+    Run one atlantis fetch per requested source. atlantis's own --source flag
+    only accepts a single value or "all" (not a comma list), so when
+    source_arg == "all" this is one combined call as before; otherwise each
+    source in requested_sources gets its own atlantis invocation (e.g. to
+    fetch viirs+modis without touching a slow/expensive gfm run). Returns
+    the worst (most negative / most "failed") returncode across calls, or 0
+    if every call succeeded.
+    """
+    if source_arg == "all":
+        source_calls = ["all"]
+    else:
+        source_calls = requested_sources
+
+    worst_rc = 0
+    for source in source_calls:
+        cmd = [
+            atlantis_bin, "fetch",
+            "--event", flood_case,
+            "--source", source,
+            "--output", str(output_dir),
+            "--bbox", bbox,
+            "--start-date", start_date,
+            "--end-date", end_date,
+            "--modis-composite", modis_composite,
+            "--modis-backend", modis_backend,
+            "--harmonise",
+            "--strategy", "peak",
+        ]
+        rc = run_cmd(cmd, dry_run=dry_run, timeout=timeout)
+        if rc != 0:
+            worst_rc = rc
+    return worst_rc
+
+
 def run_tiled_event(flood_case, row, args, event_dir, bbox_bounds, start_date, end_date,
                      requested_sources, keep_tile_dirs=False):
     """
     Fetch one event whose bbox exceeds --max-tile-deg by splitting it into
-    a grid of smaller sub-tiles (each fetched with its own atlantis call
-    over --source all, --strategy peak), then mosaicking each source's
+    a grid of smaller sub-tiles (each fetched via run_atlantis_fetch,
+    --strategy peak), then mosaicking each source's
     harmonised.tif (and gfm's permanent_water.tif) back into a single
     file under event_dir, matching the layout a non-tiled fetch produces.
 
@@ -234,38 +306,48 @@ def run_tiled_event(flood_case, row, args, event_dir, bbox_bounds, start_date, e
             print(f"[tile {ti:02d}] skipping: harmonised outputs already exist")
             continue
 
-        cmd = [
-            args.atlantis_bin, "fetch",
-            "--event", flood_case,
-            "--source", args.source,
-            "--output", str(tile_dir),
-            "--bbox", bbox,
-            "--start-date", start_date,
-            "--end-date", end_date,
-            "--modis-composite", args.modis_composite,
-            "--harmonise",
-            "--strategy", "peak",
-        ]
-        rc = run_cmd(cmd, dry_run=args.dry_run, timeout=args.timeout)
+        rc = run_atlantis_fetch(
+            args.atlantis_bin, flood_case, args.source, requested_sources, tile_dir,
+            bbox, start_date, end_date, args.modis_composite, args.timeout,
+            dry_run=args.dry_run, modis_backend=args.modis_backend,
+        )
         if rc != 0:
-            print(f"[tile {ti:02d}] failed (rc={rc}), continuing with remaining tiles")
+            print(f"[tile {ti:02d}] at least one source failed (rc={rc}), continuing with remaining tiles")
 
     if args.dry_run:
         return "ok"
 
     peak_token = parse_date(row["date_of_max_flood_extent"]).strftime("%Y%m%d")
-    ok_sources, missing_sources = [], []
+    total_tiles = len(tiles)
+    coverage = {}
+    status_parts = []
+    any_incomplete = False
 
     for source in requested_sources:
         harmonised_tifs = sorted(tiles_root.glob(f"tile_*/{source}/harmonised/*_harmonised.tif"))
-        if not harmonised_tifs:
-            missing_sources.append(source)
+        # Count distinct contributing tile dirs, not files, in case a tile
+        # ever produced more than one date's harmonised.tif.
+        n_ok = len({p.parents[2] for p in harmonised_tifs})
+        coverage[source] = {"ok_tiles": n_ok, "total_tiles": total_tiles}
+
+        status_relevant = source not in SKIP_CHECK_EXCLUDE_SOURCES
+
+        if n_ok == 0:
+            if status_relevant:
+                status_parts.append(f"{source}:missing")
+                any_incomplete = True
             continue
 
         out_tif = event_dir / source / "harmonised" / f"{flood_case}_{peak_token}_{source}_harmonised.tif"
         mosaic_geotiffs(harmonised_tifs, out_tif)
-        ok_sources.append(source)
-        print(f"[{source}] mosaicked {len(harmonised_tifs)} tile(s) -> {out_tif}")
+        print(f"[{source}] mosaicked {n_ok}/{total_tiles} tile(s) -> {out_tif}")
+
+        if n_ok < total_tiles:
+            if status_relevant:
+                status_parts.append(f"{source}:{n_ok}/{total_tiles}")
+                any_incomplete = True
+        elif status_relevant:
+            status_parts.append(f"{source}:ok")
 
         if source == "gfm":
             pw_tifs = sorted(tiles_root.glob("tile_*/gfm/processed/*_permanent_water.tif"))
@@ -274,14 +356,19 @@ def run_tiled_event(flood_case, row, args, event_dir, bbox_bounds, start_date, e
                 mosaic_geotiffs(pw_tifs, out_pw)
                 print(f"[gfm] mosaicked {len(pw_tifs)} permanent_water tile(s) -> {out_pw}")
 
-    if not keep_tile_dirs:
+    event_dir.mkdir(parents=True, exist_ok=True)
+    _coverage_sidecar_path(event_dir).write_text(json.dumps(coverage, indent=2))
+
+    # Only clean up tiles once every requested source has full coverage --
+    # an incomplete tile set needs to survive so a later --skip-existing
+    # resume can find and reuse the tiles that already succeeded instead
+    # of silently accepting the gap or refetching everything from scratch.
+    if not keep_tile_dirs and not any_incomplete:
         shutil.rmtree(tiles_root, ignore_errors=True)
 
-    if not ok_sources:
+    if all(c["ok_tiles"] == 0 for c in coverage.values()):
         return "failed_all_tiles"
-    if missing_sources:
-        return f"partial_missing_{'+'.join(missing_sources)}"
-    return "ok"
+    return "partial_" + "_".join(status_parts) if any_incomplete else "ok"
 
 
 def main():
@@ -293,7 +380,11 @@ def main():
     parser.add_argument("--outroot", default="kurosiwo_observations",
                          help="Root output directory")
     parser.add_argument("--source", default="all",
-                         help="atlantis source(s): gfm, viirs, modis, or all. Default: all")
+                         help="atlantis source(s): gfm, viirs, modis, a comma list (e.g. "
+                              "'viirs,modis' to skip gfm), or all. A comma list runs one "
+                              "atlantis call per source instead of one combined --source all "
+                              "call (atlantis itself only accepts a single value or 'all'). "
+                              "Default: all")
     parser.add_argument("--atlantis-bin", default=DEFAULT_ATLANTIS_BIN,
                          help=f"Path to the atlantis executable. Default: {DEFAULT_ATLANTIS_BIN}")
     parser.add_argument("--padding", type=float, default=0.0,
@@ -302,6 +393,10 @@ def main():
                          help="If set, fetch a +/- N day window around date_of_max_flood_extent "
                               "instead of the full date_start..date_end catalogue window.")
     parser.add_argument("--modis-composite", default="F2", choices=["F1", "F1C", "F2", "F3"])
+    parser.add_argument("--modis-backend", default="lance_geotiff", choices=["lance_geotiff", "laads_hdf4"],
+                         help="atlantis MODIS backend. lance_geotiff (default) only serves the "
+                              "last ~1 week of near-real-time data -- use laads_hdf4 for any "
+                              "event older than that (2003-2025 reprocessed archive).")
     parser.add_argument("--limit", type=int, default=None,
                          help="Optional limit on number of events to process.")
     parser.add_argument("--skip-existing", action="store_true",
@@ -327,7 +422,7 @@ def main():
     outroot = Path(args.outroot)
     outroot.mkdir(parents=True, exist_ok=True)
 
-    requested_sources = ALL_SOURCES if args.source == "all" else [args.source]
+    requested_sources = ALL_SOURCES if args.source == "all" else [s.strip() for s in args.source.split(",")]
     summary_file = outroot / "batch_summary.csv"
     summary_rows = []
 
@@ -378,19 +473,11 @@ def main():
         else:
             # atlantis bbox convention: "west south east north"
             bbox = f"{bbox_lon_min} {bbox_lat_min} {bbox_lon_max} {bbox_lat_max}"
-            cmd = [
-                args.atlantis_bin, "fetch",
-                "--event", flood_case,
-                "--source", args.source,
-                "--output", str(event_dir),
-                "--bbox", bbox,
-                "--start-date", start_date,
-                "--end-date", end_date,
-                "--modis-composite", args.modis_composite,
-                "--harmonise",
-                "--strategy", "peak",
-            ]
-            rc = run_cmd(cmd, dry_run=args.dry_run, timeout=args.timeout)
+            rc = run_atlantis_fetch(
+                args.atlantis_bin, flood_case, args.source, requested_sources, event_dir,
+                bbox, start_date, end_date, args.modis_composite, args.timeout,
+                dry_run=args.dry_run, modis_backend=args.modis_backend,
+            )
             status = "ok" if rc == 0 else f"failed_{rc}"
 
         summary_rows.append({

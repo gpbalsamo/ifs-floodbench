@@ -2,8 +2,14 @@ __pycache__/
 *.pyc
 kurosiwo_observations/
 modis2016_observations/
+de2026_observations/
 cama_png/
+de2026_png/
 modis_events/
 kurosiwo-dashboard/
 modis2016-dashboard/
+de2026-dashboard/
 modis2016_events/
+kurosiwo_modis/
+kurosiwo_modis_scratch/
+de2026_events/

@@ -153,8 +153,22 @@ def setup_styles():
 
 def retrieve_case(row, args, outdir):
     flood_case = str(row["flood_case"])
-    date_yyyymmdd = parse_date_to_yyyymmdd(row["date_of_max_flood_extent"])
+    peak_date = parse_date_to_yyyymmdd(row["date_of_max_flood_extent"])
     area = make_area(row, buffer_deg=args.buffer)
+
+    if args.monthly_step_archive:
+        # Some experiments (e.g. imxj) are archived as one long forecast
+        # per month, initialised on the 1st, with the peak date reached at
+        # a large step (6h resolution) rather than as its own short-range
+        # forecast base date -- e.g. 2016-01-16 lives under
+        # date=2016-01-01, step=360 (15 days * 24h), not date=2016-01-16.
+        peak_dt = dt.datetime.strptime(str(peak_date), "%Y%m%d")
+        base_dt = peak_dt.replace(day=1)
+        date_yyyymmdd = int(base_dt.strftime("%Y%m%d"))
+        step = (peak_dt - base_dt).days * 24
+    else:
+        date_yyyymmdd = peak_date
+        step = args.step
 
     globe_grib = outdir / f"{flood_case}_flood_globe.grb"
     area_grib = outdir / f"{flood_case}_flood.grb"
@@ -167,7 +181,7 @@ def retrieve_case(row, args, outdir):
         "levtype": "sfc",
         "date": date_yyyymmdd,
         "time": args.time,
-        "step": args.step,
+        "step": step,
         "param": PARAMETERS,
     }
 
@@ -522,6 +536,11 @@ def main():
     parser.add_argument("--mars-class", default="rd")
     parser.add_argument("--time", default=0, type=int)
     parser.add_argument("--step", default=24, type=int)
+    parser.add_argument("--monthly-step-archive", action="store_true",
+                         help="For experiments archived as one long forecast per month, "
+                              "initialised on the 1st (e.g. imxj): retrieve the peak date "
+                              "via date=<1st of its month>, step=<days into month>*24, "
+                              "instead of date=<peak date>, step=--step.")
     parser.add_argument("--buffer", default=0.5, type=float, help="Extra degrees around bbox")
     parser.add_argument("--width", default=1600, type=int)
     parser.add_argument("--font-scale", default=4, type=int)

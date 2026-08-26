@@ -87,6 +87,7 @@ def write_dashboard_shell(outdir, title, subtitle, events_csv,
 
       <div id="layer-control">
         <h3>Layers</h3>
+        <label id="no-interp-toggle"><input type="checkbox" id="no-interp-checkbox" /> No interpolation (native pixels)</label>
         <div id="layer-rows"></div>
         <p id="layer-empty" class="muted">No model/observation layers available for this event.</p>
         <p class="muted"><span style="display:inline-block;width:12px;height:12px;border-radius:2px;margin-right:6px;vertical-align:-1px;background:rgba(120,120,120,0.6);"></span>Gray = no observation, VIIRS/MODIS (optical sensors blocked by cloud cover &mdash; irregular, can clear up on a later date). Genuinely unknown, not "confirmed not flooded" &mdash; excluded from that layer's CSI/FAR/HR scores.</p>
@@ -313,6 +314,30 @@ main {
   border-color: #1f2937;
 }
 
+#no-interp-toggle {
+  display: block;
+  font-size: 12px;
+  color: #444;
+  margin-bottom: 8px;
+  cursor: pointer;
+}
+
+#no-interp-toggle input {
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+
+/* Leaflet image overlays get this class; scoping to #map.no-interp lets
+   the browser's native smoothing stay on by default (matches how the
+   underlying raster was rendered) while still letting a viewer switch to
+   native 1 arcmin pixels when they want to inspect data, not smoothing,
+   while zoomed in. */
+#map.no-interp .leaflet-image-layer {
+  image-rendering: pixelated;
+  image-rendering: -moz-crisp-edges;
+  image-rendering: crisp-edges;
+}
+
 .layer-row {
   padding: 4px 0;
   border-bottom: 1px solid #eee;
@@ -387,6 +412,10 @@ L.tileLayer("https://{{s}}.tile.openstreetmap.org/{{z}}/{{x}}/{{y}}.png", {{
   maxZoom: 15,
   attribution: "© OpenStreetMap contributors"
 }}).addTo(map);
+
+document.getElementById("no-interp-checkbox").addEventListener("change", e => {{
+  document.getElementById("map").classList.toggle("no-interp", e.target.checked);
+}});
 
 function continentColor(continent) {{
   const colors = {{
@@ -673,7 +702,13 @@ function renderEventList(events) {{
   }});
 }}
 
-fetch("dashboard_data/layers.json")
+// Cache-bust the manifest + catalogue CSV so a page load always sees the
+// latest data, not a browser-cached copy from a previous run against the
+// same URL (dashboard_shell.py serves plain http.server, no cache-control
+// headers of its own).
+const PAGE_LOAD_CACHE_BUST = Date.now();
+
+fetch(`dashboard_data/layers.json?v=${{PAGE_LOAD_CACHE_BUST}}`)
   .then(r => (r.ok ? r.json() : {{ layers_meta: {{}}, thresholds: [], events: {{}} }}))
   .catch(() => ({{ layers_meta: {{}}, thresholds: [], events: {{}} }}))
   .then(manifest => {{
@@ -684,7 +719,7 @@ fetch("dashboard_data/layers.json")
     renderThresholdControls();
     renderLayerControls();
 
-    Papa.parse("dashboard_data/{events_csv}", {{
+    Papa.parse(`dashboard_data/{events_csv}?v=${{PAGE_LOAD_CACHE_BUST}}`, {{
       download: true,
       header: true,
       dynamicTyping: true,
