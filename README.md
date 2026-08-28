@@ -127,10 +127,10 @@ max_flood_extent_km2, date_of_max_flood_extent, main_river_system
 Append a row to `DEflood2026_events.csv`, e.g. for a new event:
 
 ```csv
-Elbe_Floods,Germany,Europe,20260901,20260915,50.5,53.8,9.0,14.8,0,20260908,Elbe
+Elbe_Floods,Germany,Europe,20260801,20260815,50.5,53.8,9.0,14.8,0,20260808,Elbe
 ```
 
-`max_flood_extent_km2` can be left as `0` — it isn't used by the pipeline below, only `date_of_max_flood_extent` and the bounding box are.
+`date_start`/`date_end`/`date_of_max_flood_extent` must already be in the past — the pipeline extracts already-observed EO imagery (MODIS/VIIRS/GFM), so a future date has nothing to fetch yet. `max_flood_extent_km2` can be left as `0` — it isn't used by the pipeline below, only `date_of_max_flood_extent` and the bounding box are.
 
 ### 2) Fetch VIIRS/GFM observations for the new event
 
