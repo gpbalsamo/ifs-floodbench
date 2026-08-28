@@ -1,3 +1,5 @@
+![Example benchmark visual](ifs-floodbench.png)
+
 # ifs-floodbench
 
 ## Overview
