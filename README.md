@@ -38,7 +38,7 @@ conda env create -f Scripts/modis_flood.yml
 conda activate modis_flood
 ```
 
-VIIRS/GFM fetching additionally needs the [`atlantis`](https://github.com/opageo/atlantis) CLI set up separately (its own `uv`/`pixi` environment, plus a NASA Earthdata token — see atlantis's own README). The MODIS extraction script also needs an Earthdata token:
+VIIRS/GFM fetching additionally needs the [`atlantis`](https://github.com/ECMWFCode4Earth/atlantis/) CLI set up separately (its own `uv`/`pixi` environment, plus a NASA Earthdata token — see atlantis's own README). `atlantis` is an [ECMWF Code for Earth](https://github.com/ECMWFCode4Earth/atlantis/) project for extracting and harmonising EO satellite flood/water products, and is what `ifs-floodbench` uses to retrieve VIIRS and GFM (and, where possible, MODIS). The MODIS extraction script also needs an Earthdata token:
 
 ```bash
 export EARTHDATA_TOKEN="YOUR_TOKEN_HERE"
@@ -315,7 +315,7 @@ odc-stac (for EO data access)
 
 Additional requirements:
 
-* [`atlantis`](https://github.com/opageo/atlantis) — separate environment, used for VIIRS/GFM/MODIS fetching (`fetch_kurosiwo_observations.py`).
+* [`atlantis`](https://github.com/ECMWFCode4Earth/atlantis/) — separate environment, used for VIIRS/GFM/MODIS fetching (`fetch_kurosiwo_observations.py`).
 * NASA Earthdata token (`EARTHDATA_TOKEN`) — for MODIS extraction.
 * ECMWF Metview + MARS access — for `plot_kurosiwo_flood_cases.py` (ECMWF systems only).
 * `sitesctl` CLI (`module load sites`) — for `upload_dashboard.py` only.
@@ -336,6 +336,8 @@ Gianpaolo Balsamo
 Calum Baugh
 Kenka Tazi
 Andreas Grafberger
+Yannis Kalfas
+Stelios Lagaras
 ECMWF
 
 ---

@@ -9,7 +9,7 @@ The scripts currently support seven main workflows:
 3. Peak-date estimation by scanning daily MODIS rasters (with or without downloading).
 4. Temporal gap-filling of MODIS MCDWD time-series rasters.
 5. Generation of IFS/CaMa-Flood flood and river-discharge maps.
-6. Fetching VIIRS/GFM/MODIS observations via the [`atlantis`](https://github.com/opageo/atlantis)
+6. Fetching VIIRS/GFM/MODIS observations via the [`atlantis`](https://github.com/ECMWFCode4Earth/atlantis/)
    project and assembling a multi-layer HTML dashboard that overlays the
    CaMa-Flood model and all three EO observation sources on the same map,
    toggleable per layer (`fetch_kurosiwo_observations.py`,
@@ -636,7 +636,7 @@ Used by `plot_kurosiwo_flood_cases.py` (model layer) and
 
 Batch-fetches VIIRS / GFM / MODIS observations for every event in a
 KuroSiwo-style CSV catalogue, using the
-[`atlantis`](https://github.com/opageo/atlantis) CLI as the fetch and
+[`atlantis`](https://github.com/ECMWFCode4Earth/atlantis/) CLI as the fetch and
 harmonisation backend. Atlantis resamples every source to a common
 1 arcmin grid, which is what makes the sources directly comparable as map
 overlays.
