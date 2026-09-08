@@ -11,4 +11,3 @@ dependencies:
   - rasterio
   - requests
   - shapely
-prefix: /perm/pad/conda/envs/modis_flood

@@ -11,11 +11,11 @@ Combines:
   * The authoritative event metadata CSV (event_name, start_date,
     end_date, country, continent, bbox_north/west/south/east,
     approx_flooded_area_km2, main_river_system) -- e.g.
-    /home/pad/Notebooks/Modis_events.csv.
+    Notebooks/Modis_events.csv.
   * The already-picked peak observation date + clipped MODIS GeoTIFF
     per event from a modis_flood_events.py-style batch run's
     batch_summary.csv -- e.g.
-    /perm/pad/flood_cases/modis_floods_events_2016_onwards/.
+    flood_cases/modis_floods_events_2016_onwards/.
 
 Writes a KuroSiwo-style catalogue CSV (flood_case, country, continent,
 date_start, date_end, lat_min, lat_max, lon_min, lon_max,
@@ -25,8 +25,8 @@ copies each event's peak-date clipped GeoTIFF into
 
 Example:
     python3 build_modis2016_catalogue.py \
-        --events-csv /home/pad/Notebooks/Modis_events.csv \
-        --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
+        --events-csv Notebooks/Modis_events.csv \
+        --batch-root flood_cases/modis_floods_events_2016_onwards \
         --out Modis2016_events.csv \
         --modis-dir modis2016_events
 """

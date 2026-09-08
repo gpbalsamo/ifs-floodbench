@@ -42,7 +42,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 
-DEFAULT_ATLANTIS_BIN = "/perm/pad/atlantis/.venv/bin/atlantis"
+DEFAULT_ATLANTIS_BIN = shutil.which("atlantis") or "atlantis"
 
 # Sources that produce a *_<source>_harmonised.tif once fetched.
 ALL_SOURCES = ["viirs", "gfm", "modis"]

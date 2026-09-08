@@ -4,15 +4,16 @@ set -euo pipefail
 module load conda
 conda activate modis_flood
 
-WORKDIR="/home/pad/Notebooks"
+# Edit to your own working directory and batch-run output directories.
+WORKDIR="${WORKDIR:-.}"
 
 cd "${WORKDIR}"
 
 csv="KuroSiwo_events.csv"
-dir=/perm/pad/flood_cases/kurosiwo_modis
+dir=flood_cases/kurosiwo_modis
 
 csv="Modis_floods_events_2016_onwards.csv"
-dir=/perm/pad/flood_cases/modis_floods_events_2016_onwards
+dir=flood_cases/modis_floods_events_2016_onwards
 
 python3 modis_flood_events.py \
   --csv $csv \

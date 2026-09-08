@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-WORKDIR=/etc/ecmwf/nfs/dh2_perm_a/pad/ifs-floodbench
+WORKDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$WORKDIR/Scripts"
 
-CONDA_PREFIX=/perm/pad/conda/envs/modis_flood
+CONDA_PREFIX="$(conda info --base)/envs/modis_flood"
 export CONDA_PREFIX
 export PATH="$CONDA_PREFIX/bin:$PATH"
 export GDAL_DATA="$CONDA_PREFIX/share/gdal"

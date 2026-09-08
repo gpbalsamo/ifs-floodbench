@@ -15,9 +15,9 @@ The scripts currently support seven main workflows:
    toggleable per layer (`fetch_kurosiwo_observations.py`,
    `build_dashboard_manifest.py`, `overlay_utils.py`, `kurosiwo_dashboard.py`).
    `fetch_kurosiwo_observations.py` shells out to atlantis's own CLI/environment
-   (default: `/perm/pad/atlantis/.venv/bin/atlantis`), so atlantis must be set
-   up separately — see its README for `uv`/`pixi` install instructions and
-   NASA Earthdata credentials.
+   (default: resolved via `PATH`, override with `--atlantis-bin`), so atlantis
+   must be set up separately — see its README for `uv`/`pixi` install
+   instructions and NASA Earthdata credentials.
 7. A second, standalone dashboard (`build_modis2016_catalogue.py`,
    `modis2016_dashboard.py`) for named post-2016 flood events that aren't part
    of the KuroSiwo catalogue, showing MODIS + CaMa-Flood (no VIIRS/GFM, no
@@ -670,7 +670,7 @@ Arguments:
 --outroot           Root output directory. Default: kurosiwo_observations.
 --source            gfm, viirs, modis, or all. Default: all.
 --atlantis-bin       Path to the atlantis executable.
-                     Default: /perm/pad/atlantis/.venv/bin/atlantis
+                     Default: resolved via PATH (`atlantis`).
 --padding            Optional geographic padding in degrees around the event bbox.
 --window-days        If set, fetch a +/- N day window around date_of_max_flood_extent
                      instead of the catalogue's full date_start..date_end window.
@@ -932,10 +932,10 @@ catalogue stays exactly the curated, fully-scored KuroSiwo benchmark
 * an authoritative event-metadata CSV (`event_name`, `start_date`,
   `end_date`, `country`, `continent`, `bbox_north/west/south/east`,
   `approx_flooded_area_km2`, `main_river_system`) -- e.g.
-  `/home/pad/Notebooks/Modis_events.csv`
+  `Notebooks/Modis_events.csv`
 * the peak observation date + clipped MODIS GeoTIFF already picked by a
   `modis_flood_events.py`-style batch run's `batch_summary.csv` -- e.g.
-  `/perm/pad/flood_cases/modis_floods_events_2016_onwards/`
+  `flood_cases/modis_floods_events_2016_onwards/`
 
 into a KuroSiwo-style catalogue CSV (plus a `main_river_system` column,
 shown in the dashboard's event-info panel when present), copying each
@@ -946,8 +946,8 @@ Example:
 
 ```bash
 python3 build_modis2016_catalogue.py \
-  --events-csv /home/pad/Notebooks/Modis_events.csv \
-  --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
+  --events-csv Notebooks/Modis_events.csv \
+  --batch-root flood_cases/modis_floods_events_2016_onwards \
   --out Modis2016_events.csv \
   --modis-dir modis2016_events
 ```
@@ -1151,8 +1151,8 @@ CaMa-Flood is included here purely as a visual comparison layer:
 
 ```bash
 python3 Scripts/build_modis2016_catalogue.py \
-  --events-csv /home/pad/Notebooks/Modis_events.csv \
-  --batch-root /perm/pad/flood_cases/modis_floods_events_2016_onwards \
+  --events-csv Notebooks/Modis_events.csv \
+  --batch-root flood_cases/modis_floods_events_2016_onwards \
   --out Modis2016_events.csv \
   --modis-dir modis2016_events
 

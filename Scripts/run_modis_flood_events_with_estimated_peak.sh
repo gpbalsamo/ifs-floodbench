@@ -4,15 +4,16 @@ set -euo pipefail
 module load conda
 conda activate modis_flood
 
+# Edit these to your own batch-run output directories.
 csv="KuroSiwo_events.csv"
-csv_peak="Modis_KuroSiwo_peakdates.csv" 
-dir=/perm/pad/flood_cases/kurosiwo_modis
+csv_peak="Modis_KuroSiwo_peakdates.csv"
+dir=flood_cases/kurosiwo_modis
 
 csv="Modis_floods_events_2016_onwards.csv"
-csv_peak="Modis_floods_events_2016_onwards_peakdates.csv" 
-dir=/perm/pad/flood_cases/modis_floods_events_2016_onwards
+csv_peak="Modis_floods_events_2016_onwards_peakdates.csv"
+dir=flood_cases/modis_floods_events_2016_onwards
 
-wdir=/perm/pad/flood_cases/MODIS
+wdir=flood_cases/MODIS
 
 python3 estimate_modis_peak_dates_csv_only.py \
   --csv $csv \
